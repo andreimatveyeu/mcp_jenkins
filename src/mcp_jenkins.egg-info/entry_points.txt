@@ -1,0 +1,3 @@
+[console_scripts]
+mcp_jenkins_client = jenkins_mcp_server.run_client:main
+mcp_jenkins_server = jenkins_mcp_server.run_server:main
