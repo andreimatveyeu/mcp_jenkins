@@ -79,4 +79,4 @@ This sequence ensures that tests are performed against the latest build in a con
 
 ## License
 
-(Specify the license for this project, e.g., MIT, Apache 2.0. If not yet decided, this can be "To be determined.")
+This project is licensed under the MIT License.
