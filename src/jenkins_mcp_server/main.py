@@ -142,19 +142,64 @@ def health_check():
         "jenkins_connection": jenkins_status
     }), status_code
 
+# Helper function for recursive job listing
+def _get_and_filter_jobs_recursively(all_server_items, current_folder_prefix, depth, max_allowed_depth):
+    if depth > max_allowed_depth:
+        logger.debug(f"Max recursion depth {max_allowed_depth} reached for prefix '{current_folder_prefix}'. Stopping this path.")
+        return []
+    
+    local_jobs = []
+    logger.debug(f"Filtering for children of '{current_folder_prefix if current_folder_prefix else 'root'}' at depth {depth}. Total items to scan: {len(all_server_items)}")
+
+    for item in all_server_items:
+        item_fullname = item.get('fullname', item.get('name'))
+        item_url = item.get('url')
+        item_class = item.get('_class', '')
+
+        if not item_fullname:
+            logger.warning(f"Skipping item with no fullname/name: {item}")
+            continue
+
+        is_folder = 'folder' in item_class.lower() or 'multibranch' in item_class.lower()
+        is_relevant_child = False
+        
+        if current_folder_prefix: # We are looking for children of a specific folder
+            if item_fullname.startswith(current_folder_prefix + '/'):
+                relative_name = item_fullname[len(current_folder_prefix) + 1:]
+                if '/' not in relative_name: # Direct child
+                    is_relevant_child = True
+        else: # We are looking for children of the root
+            if '/' not in item_fullname: # Top-level item
+                is_relevant_child = True
+        
+        if is_relevant_child:
+            item_representation = {"name": item_fullname, "url": item_url, "_class": item_class}
+            if is_folder:
+                item_representation["type"] = "folder"
+            local_jobs.append(item_representation)
+            
+            if is_folder and depth < max_allowed_depth: # Only recurse if it's a folder and we haven't hit max depth
+                logger.info(f"Recursively processing identified folder: {item_fullname} (current depth {depth}, max_allowed_depth {max_allowed_depth})")
+                nested_jobs = _get_and_filter_jobs_recursively(
+                    all_server_items,       # Pass the same full list
+                    item_fullname,          # New prefix is the current folder's fullname
+                    depth + 1,              # Increment depth
+                    max_allowed_depth       # Pass along max_allowed_depth
+                )
+                local_jobs.extend(nested_jobs)
+    return local_jobs
+
 @app.route('/jobs', methods=['GET'])
 @require_api_key
-@limiter.exempt # API key is a form of control; apply specific limits if needed otherwise.
+@limiter.exempt 
 def list_jobs():
     """
     Lists all jobs, optionally filtering by a base folder and performing a recursive search.
     Query Parameter:
         folder_name (optional): The base folder name to start listing from.
                                 If not provided, lists all jobs from the root.
-                                Example: 'MyPipelineFolder' or 'FolderA/SubFolderB'
         recursive (optional): 'true' or 'false' (default 'false').
                               If 'true', recursively lists jobs in sub-folders.
-                              Note: Recursive listing can be slow on large Jenkins instances.
     """
     folder_name = request.args.get('folder_name')
     recursive_str = request.args.get('recursive', 'false').lower()
@@ -166,92 +211,46 @@ def list_jobs():
         logger.info(f"Returning cached job list for key: {cache_key}")
         return jsonify({"jobs": cached_result, "source": "cache"})
 
-    all_jobs = []
-
-    @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
-    def get_jobs_in_folder_recursive(current_folder_prefix=None, depth=0, max_depth=5): # Renamed parameter
-        if depth > max_depth:
-            logger.warning(f"Max recursion depth {max_depth} reached for prefix '{current_folder_prefix}'. Stopping.")
-            return []
-        
-        local_jobs = []
-        try:
-            # Fetch all jobs from the server; python-jenkins 1.8.2 get_jobs() does not take folder_name or folder_depth.
-            # We will filter manually.
-            all_server_jobs = jenkins_server.get_jobs() 
-            logger.info(f"Processing {len(all_server_jobs)} server jobs/folders to filter for prefix: '{current_folder_prefix if current_folder_prefix else 'root'}', depth: {depth}")
-
-            for item in all_server_jobs:
-                item_fullname = item.get('fullname', item.get('name')) # 'fullname' is crucial for path
-                item_url = item.get('url')
-                item_class = item.get('_class', '')
-
-                if not item_fullname:
-                    continue
-
-                is_folder = 'folder' in item_class.lower() or 'multibranch' in item_class.lower()
-
-                # Determine if this item is a relevant child for the current_folder_prefix
-                is_relevant_child = False
-                
-                if current_folder_prefix:
-                    # Check if item_fullname starts with current_folder_prefix + '/'
-                    # and that the remaining part does not contain more slashes (direct child)
-                    if item_fullname.startswith(current_folder_prefix + '/'):
-                        relative_name = item_fullname[len(current_folder_prefix) + 1:]
-                        if '/' not in relative_name:
-                            is_relevant_child = True
-                else: # We are at the root (current_folder_prefix is None)
-                    # A top-level item has no slashes in its fullname
-                    if '/' not in item_fullname:
-                        is_relevant_child = True
-                
-                if is_relevant_child:
-                    if not is_folder:
-                        local_jobs.append({"name": item_fullname, "url": item_url, "_class": item_class})
-                    else: # It's a folder
-                        # Always add the folder itself if it's a direct child
-                        local_jobs.append({"name": item_fullname, "url": item_url, "type": "folder", "_class": item_class})
-                        if recursive: # If recursive, explore this folder
-                            logger.info(f"Recursively processing jobs in identified folder: {item_fullname}")
-                            local_jobs.extend(get_jobs_in_folder_recursive(current_folder_prefix=item_fullname, depth=depth + 1, max_depth=max_depth))
-        
-        except jenkins.JenkinsException as e:
-            logger.error(f"Jenkins API error while processing jobs for prefix '{current_folder_prefix}': {e}")
-            raise 
-        return local_jobs
-
     try:
-        # folder_name from request.args is the initial current_folder_prefix
-        logger.info(f"Listing jobs for base folder/prefix: '{folder_name if folder_name else 'root'}', recursive: {recursive}")
-        all_jobs = get_jobs_in_folder_recursive(current_folder_prefix=folder_name, max_depth=5 if recursive else 0)
-
-        # Deduplication might be needed if the logic above could add items multiple times,
-        # but with fullname filtering, it should be mostly distinct.
-        # A simple deduplication pass:
+        @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
+        def fetch_all_jenkins_items_from_server():
+            logger.info("Fetching all jobs/items from Jenkins server (this might take a moment)...")
+            # This is the crucial call that fetches everything.
+            # The comment about python-jenkins 1.8.2 not taking folder_name for get_jobs() is key.
+            return jenkins_server.get_jobs() 
+        
+        all_server_items_flat_list = fetch_all_jenkins_items_from_server()
+        
+        max_depth_for_call = 5 if recursive else 0 
+        logger.info(f"Filtering all {len(all_server_items_flat_list)} Jenkins items for base folder: '{folder_name if folder_name else 'root'}', recursive: {recursive}, max_depth: {max_depth_for_call}")
+        
+        processed_jobs = _get_and_filter_jobs_recursively(
+            all_server_items_flat_list,
+            current_folder_prefix=folder_name, # Start filtering from this folder (or root if None)
+            depth=0,
+            max_allowed_depth=max_depth_for_call
+        )
+        
+        # Deduplication based on fullname (should be unique)
         deduplicated_jobs = []
         seen_fullnames = set()
-        for job in all_jobs:
+        for job in processed_jobs:
             if job['name'] not in seen_fullnames:
                 deduplicated_jobs.append(job)
                 seen_fullnames.add(job['name'])
-        all_jobs = deduplicated_jobs
         
-        job_list_cache[cache_key] = all_jobs
-        return jsonify({"jobs": all_jobs, "source": "api"})
-    except jenkins.NotFoundException: 
-        # This specific exception might be less likely now since we fetch all jobs first.
-        # However, it could be raised by jenkins_server.get_jobs() if Jenkins itself has issues.
-        logger.warning(f"Jenkins API error (potentially NotFound) while fetching all jobs. Base folder requested was '{folder_name}'.")
-        return make_error_response(f"Jenkins API error (possibly related to folder '{folder_name}')", 404)
-    except RetryError as e:
-        logger.error(f"Jenkins API error after retries while listing jobs: {e}")
+        job_list_cache[cache_key] = deduplicated_jobs
+        logger.info(f"Found {len(deduplicated_jobs)} jobs/folders after processing for folder '{folder_name if folder_name else 'root'}' (recursive={recursive}).")
+        return jsonify({"jobs": deduplicated_jobs, "source": "api"})
+    
+    except RetryError as e: # Catch RetryError from fetch_all_jenkins_items_from_server
+        logger.error(f"Jenkins API error after retries while fetching all jobs: {e}")
         return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
-    except jenkins.JenkinsException as e:
+    except jenkins.JenkinsException as e: # Catch other Jenkins specific errors
         logger.error(f"Jenkins API error while listing jobs: {e}")
         return make_error_response(f"Jenkins API error: {str(e)}", 500)
     except Exception as e:
-        logger.error(f"Unexpected error while listing jobs: {e}")
+        logger.error(f"Unexpected error while listing jobs: {e}", exc_info=True) # Add exc_info for better debugging
         return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
 
 
@@ -634,5 +633,7 @@ if __name__ == '__main__':
     # DEBUG_MODE for Flask app.run's debug is separate from our custom DEBUG_MODE flag.
     # Our DEBUG_MODE controls API key bypass, Flask's debug controls reloader, debugger etc.
     flask_debug_mode = os.environ.get('FLASK_DEBUG', 'False').lower() == 'true'
-    logger.info(f"Starting Flask development server (Flask Debug: {flask_debug_mode}, App DEBUG_MODE: {DEBUG_MODE}).")
-    app.run(debug=flask_debug_mode, host='0.0.0.0', port=5000)
+    # Use SERVER_PORT from environment for consistency with tests, default to 5000 if not set.
+    server_port = int(os.environ.get('SERVER_PORT', '5000'))
+    logger.info(f"Starting Flask development server (Flask Debug: {flask_debug_mode}, App DEBUG_MODE: {DEBUG_MODE}) on port {server_port}.")
+    app.run(debug=flask_debug_mode, host='0.0.0.0', port=server_port)

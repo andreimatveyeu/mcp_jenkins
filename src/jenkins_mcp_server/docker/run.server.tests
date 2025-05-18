@@ -1,0 +1,79 @@
+#!/bin/sh
+set -eo pipefail # Exit on error, treat unset variables as an error, and propagate pipeline errors
+
+# Determine the project root directory on the host.
+# This script is expected to be in .../src/jenkins_mcp_server/docker/run.server.tests
+# So, one level up from the script's directory is .../src/jenkins_mcp_server/
+SCRIPT_DIR=$(dirname "$(realpath "$0")")
+PROJECT_ROOT_ON_HOST=$(realpath "${SCRIPT_DIR}/..") # This should be src/jenkins_mcp_server
+
+IMAGE_NAME="jenkins_mcp_server:latest" # Standard image name, ensure 'docker/build' creates this
+CONTAINER_APP_DIR="/app" # Standard working directory in the container, as per typical Dockerfile setup
+# Path to tests inside the container, reflecting the project structure within the src directory
+TEST_TARGET_IN_CONTAINER="${CONTAINER_APP_DIR}/src/jenkins_mcp_server/tests/functional"
+SERVER_PORT_FOR_TESTS="8001" # Port for the server started by tests, to avoid conflicts with a potentially running main server
+
+echo "--- Functional Test Runner ---"
+echo "Host Project Root: ${PROJECT_ROOT_ON_HOST}"
+echo "Docker Image: ${IMAGE_NAME}"
+echo "Test Target in Container: ${TEST_TARGET_IN_CONTAINER}"
+echo "Server Port for Tests (inside container): ${SERVER_PORT_FOR_TESTS}"
+echo "-----------------------------"
+
+# Check if Docker is running
+if ! docker info > /dev/null 2>&1; then
+    echo "Error: Docker does not seem to be running. Please start Docker and try again."
+    exit 1
+fi
+
+# Check if the image exists.
+if ! docker image inspect "$IMAGE_NAME" > /dev/null 2>&1; then
+    echo "Error: Docker image '$IMAGE_NAME' not found."
+    echo "Please build the image first. You might need to run a script like '${PROJECT_ROOT_ON_HOST}/docker/build'."
+    echo "Exiting."
+    exit 1
+fi
+
+echo "Running functional tests using pytest..."
+# -t: Allocate a pseudo-TTY. This can help with output buffering and signal handling.
+# --rm: Automatically remove the container when it exits.
+# -v: Mount the project's source code into the container.
+#     This ensures the latest code and tests are used.
+#     The source code from ${PROJECT_ROOT_ON_HOST} (e.g., src/jenkins_mcp_server)
+#     will be available at ${CONTAINER_APP_DIR} (e.g., /app) in the container.
+# -e: Set environment variables for the test environment.
+#     PYTHONUNBUFFERED=1: Ensures Python output (print statements) is sent directly to stdout/stderr
+#                         without buffering, making logs appear in real-time.
+#     SERVER_PORT: Used by test_server.py to know which port the internal server (started by the fixture) should try to use.
+# --network host: Allows the container to share the host's network stack.
+#                 The server started by the test fixture binds to localhost inside the container;
+#                 --network host makes this straightforward.
+# The command to run inside the container is 'pytest ...'.
+#   -v: Verbose output.
+#   -s: Show print statements (stdout) from tests. This is helpful for debugging.
+docker run -t --rm \
+    --name mcp_jenkins_tests \
+    -v "${PROJECT_ROOT_ON_HOST}:${CONTAINER_APP_DIR}/src/jenkins_mcp_server" \
+    -e "PYTHONUNBUFFERED=1" \
+    -e "SERVER_PORT=${SERVER_PORT_FOR_TESTS}" \
+    -e "PYTHONPATH=${CONTAINER_APP_DIR}/src" \
+    -e JENKINS_URL=${JENKINS_URL} \
+    -e JENKINS_USER=${JENKINS_USER} \
+    -e JENKINS_API_TOKEN=${JENKINS_API_TOKEN} \
+    -e MCP_API_KEY=${MCP_API_KEY} \
+    --network host \
+    --entrypoint pytest \
+    "$IMAGE_NAME" \
+    "${TEST_TARGET_IN_CONTAINER}" -v -s
+
+EXIT_CODE=$?
+
+echo "-----------------------------"
+if [ $EXIT_CODE -eq 0 ]; then
+    echo "Functional tests passed successfully."
+else
+    echo "Functional tests failed with exit code $EXIT_CODE."
+fi
+echo "-----------------------------"
+
+exit $EXIT_CODE
