@@ -99,6 +99,14 @@ def get_llm_instruction(query, model):
          - folder_name (string, optional): The base folder to search in.
          - recursive (boolean, optional, default: false): Whether to search recursively.
 
+    5. get_build_log: Gets the console log for a specific build.
+       Action name: "get_build_log"
+       Parameters:
+         - job_name (string, required): The name of the Jenkins job (e.g., "testwinlaptop", "MyFolder/MyJob").
+         - build_number (string or integer, required): The build identifier.
+           Can be a specific number (e.g., 123, "123").
+           Supported keywords: "lastBuild", "lastSuccessfulBuild", "lastCompletedBuild".
+
     User query: "{query}"
 
     Based on the user query, identify the most appropriate action and extract its parameters.
@@ -119,6 +127,15 @@ def get_llm_instruction(query, model):
       "parameters": {{
         "job_name": "testwinlaptop",
         "limit": 3
+      }}
+    }}
+
+    Example for "get log for MyJob build 7":
+    {{
+      "action": "get_build_log",
+      "parameters": {{
+        "job_name": "MyJob",
+        "build_number": 7
       }}
     }}
 
@@ -290,6 +307,26 @@ def execute_instruction(instruction):
                 summary += f"... and {len(jobs)-20} more."
             return summary.strip()
         return jobs_data
+
+    elif action == "get_build_log":
+        job_name = params.get("job_name")
+        build_number = params.get("build_number")
+        if not job_name or build_number is None: # build_number can be 0 or "lastBuild"
+            return "Error: Missing job_name or build_number for get_build_log."
+        
+        # The server endpoint for getting a build log:
+        # GET /job/<path:job_path>/build/<build_number_str>/log
+        result = call_mcp_server(f"/job/{job_name}/build/{build_number}/log")
+        
+        # The server now returns a summary and a log URL.
+        if isinstance(result, dict) and "summary" in result and "log_url" in result:
+            return (f"Summary for {result.get('job_name', job_name)} build {result.get('build_number', build_number)}:\n"
+                    f"{result['summary']}\n"
+                    f"Full log available at: {result['log_url']}")
+        elif isinstance(result, dict) and "error" in result: # Pass through server error messages
+             return f"Error from server: {result['error']}"
+        return result # Return other error strings or unexpected structures from call_mcp_server
+
     else:
         return f"Unknown action: {action}"
 

@@ -169,71 +169,81 @@ def list_jobs():
     all_jobs = []
 
     @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
-    def get_jobs_in_folder_recursive(current_folder_name=None, depth=0, max_depth=5): # Max depth to prevent infinite loops
+    def get_jobs_in_folder_recursive(current_folder_prefix=None, depth=0, max_depth=5): # Renamed parameter
         if depth > max_depth:
-            logger.warning(f"Max recursion depth {max_depth} reached for folder '{current_folder_name}'. Stopping.")
+            logger.warning(f"Max recursion depth {max_depth} reached for prefix '{current_folder_prefix}'. Stopping.")
             return []
         
         local_jobs = []
         try:
-            # folder_depth=0 ensures we only get immediate children, then we recurse manually
-            # If current_folder_name is None, get_jobs lists from root.
-            # If current_folder_name is provided, it lists jobs/folders within that specific folder.
-            logger.info(f"Fetching jobs/folders from: '{current_folder_name if current_folder_name else 'root'}', depth: {depth}")
-            items = jenkins_server.get_jobs(folder_name=current_folder_name, folder_depth=0)
+            # Fetch all jobs from the server; python-jenkins 1.8.2 get_jobs() does not take folder_name or folder_depth.
+            # We will filter manually.
+            all_server_jobs = jenkins_server.get_jobs() 
+            logger.info(f"Processing {len(all_server_jobs)} server jobs/folders to filter for prefix: '{current_folder_prefix if current_folder_prefix else 'root'}', depth: {depth}")
 
-            for item in items:
-                item_name = item.get('fullname', item.get('name'))
+            for item in all_server_jobs:
+                item_fullname = item.get('fullname', item.get('name')) # 'fullname' is crucial for path
                 item_url = item.get('url')
                 item_class = item.get('_class', '')
 
-                if not item_name: # Should not happen
+                if not item_fullname:
                     continue
 
-                # Add if it's a job (not a folder type we recurse into)
-                # Common folder types: com.cloudbees.hudson.plugins.folder.Folder, org.jenkinsci.plugins.workflow.multibranch.WorkflowMultiBranchProject
-                is_folder = 'folder' in item_class.lower() or 'multibranch' in item_class.lower() # Basic check
+                is_folder = 'folder' in item_class.lower() or 'multibranch' in item_class.lower()
 
-                if not is_folder:
-                    local_jobs.append({"name": item_name, "url": item_url, "_class": item_class})
-                elif recursive and is_folder:
-                    # It's a folder and we are in recursive mode.
-                    # Add the folder itself as a "job" entry for visibility, or skip if only jobs are wanted.
-                    # For now, let's add it, and then recurse.
-                    # local_jobs.append({"name": item_name, "url": item_url, "type": "folder", "_class": item_class})
-                    logger.info(f"Recursively fetching jobs in folder: {item_name}")
-                    local_jobs.extend(get_jobs_in_folder_recursive(current_folder_name=item_name, depth=depth + 1, max_depth=max_depth))
-                elif is_folder and not recursive and not current_folder_name:
-                    # If not recursive and at root, list top-level folders as well
-                     local_jobs.append({"name": item_name, "url": item_url, "type": "folder", "_class": item_class})
-
-
-        except jenkins.NotFoundException:
-            logger.warning(f"Folder '{current_folder_name}' not found during recursive search.")
-            # This might happen if a folder is deleted during the scan.
-            # Continue with other folders/jobs.
+                # Determine if this item is a relevant child for the current_folder_prefix
+                is_relevant_child = False
+                
+                if current_folder_prefix:
+                    # Check if item_fullname starts with current_folder_prefix + '/'
+                    # and that the remaining part does not contain more slashes (direct child)
+                    if item_fullname.startswith(current_folder_prefix + '/'):
+                        relative_name = item_fullname[len(current_folder_prefix) + 1:]
+                        if '/' not in relative_name:
+                            is_relevant_child = True
+                else: # We are at the root (current_folder_prefix is None)
+                    # A top-level item has no slashes in its fullname
+                    if '/' not in item_fullname:
+                        is_relevant_child = True
+                
+                if is_relevant_child:
+                    if not is_folder:
+                        local_jobs.append({"name": item_fullname, "url": item_url, "_class": item_class})
+                    else: # It's a folder
+                        # Always add the folder itself if it's a direct child
+                        local_jobs.append({"name": item_fullname, "url": item_url, "type": "folder", "_class": item_class})
+                        if recursive: # If recursive, explore this folder
+                            logger.info(f"Recursively processing jobs in identified folder: {item_fullname}")
+                            local_jobs.extend(get_jobs_in_folder_recursive(current_folder_prefix=item_fullname, depth=depth + 1, max_depth=max_depth))
+        
         except jenkins.JenkinsException as e:
-            logger.error(f"Jenkins API error while listing jobs for '{current_folder_name}': {e}")
-            raise # Re-raise to be caught by the main try-except
+            logger.error(f"Jenkins API error while processing jobs for prefix '{current_folder_prefix}': {e}")
+            raise 
         return local_jobs
 
     try:
-        if folder_name:
-            logger.info(f"Listing jobs for base folder: {folder_name}, recursive: {recursive}")
-            all_jobs = get_jobs_in_folder_recursive(current_folder_name=folder_name)
-        else:
-            logger.info(f"Listing all jobs from root, recursive: {recursive}")
-            all_jobs = get_jobs_in_folder_recursive() # Start from root
+        # folder_name from request.args is the initial current_folder_prefix
+        logger.info(f"Listing jobs for base folder/prefix: '{folder_name if folder_name else 'root'}', recursive: {recursive}")
+        all_jobs = get_jobs_in_folder_recursive(current_folder_prefix=folder_name, max_depth=5 if recursive else 0)
 
-        # Deduplicate based on 'name' as recursion might list jobs multiple ways if not careful with paths
-        # However, 'fullname' should be unique.
-        # The current recursive logic should fetch based on 'fullname' for sub-folders.
+        # Deduplication might be needed if the logic above could add items multiple times,
+        # but with fullname filtering, it should be mostly distinct.
+        # A simple deduplication pass:
+        deduplicated_jobs = []
+        seen_fullnames = set()
+        for job in all_jobs:
+            if job['name'] not in seen_fullnames:
+                deduplicated_jobs.append(job)
+                seen_fullnames.add(job['name'])
+        all_jobs = deduplicated_jobs
         
         job_list_cache[cache_key] = all_jobs
         return jsonify({"jobs": all_jobs, "source": "api"})
-    except jenkins.NotFoundException:
-        logger.warning(f"Base folder '{folder_name}' not found.")
-        return make_error_response(f"Folder '{folder_name}' not found", 404)
+    except jenkins.NotFoundException: 
+        # This specific exception might be less likely now since we fetch all jobs first.
+        # However, it could be raised by jenkins_server.get_jobs() if Jenkins itself has issues.
+        logger.warning(f"Jenkins API error (potentially NotFound) while fetching all jobs. Base folder requested was '{folder_name}'.")
+        return make_error_response(f"Jenkins API error (possibly related to folder '{folder_name}')", 404)
     except RetryError as e:
         logger.error(f"Jenkins API error after retries while listing jobs: {e}")
         return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
@@ -380,6 +390,137 @@ def get_build_status(job_path, build_number_str):
         return make_error_response(f"Invalid build_number format: {build_number_str}. Must be an integer or a valid string identifier.", 400)
     except Exception as e:
         logger.error(f"Unexpected error for job '{job_path}', build '{build_number_str}': {e}")
+        return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
+
+
+@app.route('/job/<path:job_path>/build/<build_number_str>/log', methods=['GET'])
+@require_api_key
+@limiter.limit("60 per hour") # Limit log retrieval
+def get_build_log(job_path, build_number_str):
+    """
+    Gets the console output (log) of a specific build for a job.
+    job_path can include folders, e.g., 'MyJob' or 'MyFolder/MyJob'.
+    build_number_str should be the build number or 'lastBuild', 'lastSuccessfulBuild', etc.
+    """
+    if not job_path or not build_number_str:
+        logger.warning("Build log request with missing job_path or build_number.")
+        return make_error_response("Missing job_path or build_number parameter", 400)
+
+    # Logic to resolve build_number_str (similar to get_build_status)
+    @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
+    def _fetch_job_info_for_log(j_path):
+        return jenkins_server.get_job_info(j_path)
+
+    @retry(wait=wait_exponential(multiplier=1, min=1, max=4), stop=stop_after_attempt(3), reraise=True)
+    def _fetch_console_output(j_path, build_id):
+        return jenkins_server.get_build_console_output(j_path, build_id)
+
+    @retry(wait=wait_exponential(multiplier=1, min=1, max=4), stop=stop_after_attempt(3), reraise=True)
+    def _fetch_build_info_for_log_url(j_path, build_id): # Similar to one in get_build_status
+        return jenkins_server.get_build_info(j_path, build_id)
+
+    def summarize_log_content(log_text: str, max_lines=15) -> str:
+        lines = log_text.splitlines()
+        summary_parts = []
+        error_keywords = ["ERROR", "FAILURE", "Failed", "Traceback (most recent call last):"]
+        success_keywords = ["Finished: SUCCESS", "Build successful"]
+        
+        if not lines:
+            return "Log is empty."
+
+        summary_parts.append(f"Log analysis (first {max_lines} lines and key events):")
+        
+        # Add first few lines
+        for i, line in enumerate(lines[:max_lines]):
+            summary_parts.append(f"  {line}")
+            if i == max_lines -1 and len(lines) > max_lines:
+                summary_parts.append("  ...")
+
+        found_errors = []
+        found_success = []
+
+        for line_num, line in enumerate(lines):
+            for err_key in error_keywords:
+                if err_key in line:
+                    found_errors.append(f"Error indicator found on line {line_num+1}: {line.strip()}")
+            for suc_key in success_keywords:
+                if suc_key in line:
+                    found_success.append(f"Success indicator found on line {line_num+1}: {line.strip()}")
+        
+        if found_errors:
+            summary_parts.append("\nKey Errors/Failures found:")
+            summary_parts.extend([f"  - {err}" for err in found_errors[:5]]) # Limit reported errors
+        elif found_success:
+            summary_parts.append("\nKey Success indicators found:")
+            summary_parts.extend([f"  - {suc}" for suc in found_success])
+        else:
+            summary_parts.append("\nNo explicit success or error keywords found in the log.")
+            
+        if "Finished: SUCCESS" in log_text:
+            summary_parts.append("\nOverall status: Likely SUCCESSFUL.")
+        elif "Finished: FAILURE" in log_text:
+            summary_parts.append("\nOverall status: Likely FAILED.")
+        elif "Finished: ABORTED" in log_text:
+            summary_parts.append("\nOverall status: Likely ABORTED.")
+        
+        return "\n".join(summary_parts)
+
+    try:
+        build_identifier_resolved = None
+        if build_number_str.isdigit():
+            build_identifier_resolved = int(build_number_str)
+        else:
+            # Fetch job info to resolve special build strings like 'lastBuild'
+            job_info_data = _fetch_job_info_for_log(job_path)
+            if build_number_str in job_info_data and \
+               isinstance(job_info_data[build_number_str], dict) and \
+               'number' in job_info_data[build_number_str]:
+                build_identifier_resolved = job_info_data[build_number_str]['number']
+            else:
+                # Check if it's a direct build reference like 'lastBuild' which might not be in job_info directly
+                # but python-jenkins handles some of these if passed as string to get_build_info/console_output
+                # However, for console_output, it strictly needs a number.
+                # So, we must resolve it to a number first.
+                logger.warning(f"Cannot resolve build identifier string '{build_number_str}' for job '{job_path}' to a number for log retrieval.")
+                return make_error_response(f"Invalid or unresolvable build identifier string for log: {build_number_str}. Must resolve to a specific build number.", 400)
+        
+        if build_identifier_resolved is None:
+             return make_error_response(f"Could not determine build number for log retrieval: {build_number_str}", 400)
+
+        logger.info(f"Getting console log for job '{job_path}', build #{build_identifier_resolved}")
+        
+        log_content = _fetch_console_output(job_path, build_identifier_resolved)
+        build_info_for_url = _fetch_build_info_for_log_url(job_path, build_identifier_resolved)
+        
+        log_url = build_info_for_url.get('url', '')
+        if log_url and not log_url.endswith('/'):
+            log_url += '/'
+        log_url += "console" # Standard Jenkins console log URL pattern
+
+        summary = summarize_log_content(log_content)
+
+        return jsonify({
+            "job_name": job_path,
+            "build_number": build_identifier_resolved,
+            "summary": summary,
+            "log_url": log_url
+        })
+
+    except jenkins.NotFoundException:
+        resolved_num_str = str(build_identifier_resolved) if 'build_identifier_resolved' in locals() and build_identifier_resolved is not None else 'N/A'
+        logger.warning(f"Job '{job_path}' or build '{build_number_str}' (resolved to {resolved_num_str}) not found for log retrieval.")
+        return make_error_response(f"Job '{job_path}' or build '{build_number_str}' not found for log retrieval", 404)
+    except RetryError as e:
+        logger.error(f"Jenkins API error after retries for job '{job_path}', build '{build_number_str}' log: {e}")
+        return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
+    except jenkins.JenkinsException as e:
+        logger.error(f"Jenkins API error for job '{job_path}', build '{build_number_str}' log: {e}")
+        return make_error_response(f"Jenkins API error: {str(e)}", 500)
+    except ValueError: 
+        logger.warning(f"Invalid build_number format for log: {build_number_str} for job {job_path}")
+        return make_error_response(f"Invalid build_number format for log: {build_number_str}. Must be an integer or resolve to one.", 400)
+    except Exception as e:
+        logger.error(f"Unexpected error for job '{job_path}', build '{build_number_str}' log: {e}")
         return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
 
 

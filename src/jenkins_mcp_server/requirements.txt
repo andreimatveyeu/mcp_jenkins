@@ -2,7 +2,7 @@ pylint
 requests
 google-generativeai
 Flask
-python-jenkins
+python-jenkins==1.8.2
 Flask-Limiter
 cachetools
 pydantic
