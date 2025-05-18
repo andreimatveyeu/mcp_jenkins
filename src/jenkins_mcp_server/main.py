@@ -34,6 +34,36 @@ limiter = Limiter(
 logging.basicConfig(level=LOG_LEVEL, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+# Conditional File Logging for tests
+WRITE_LOG_TO_FILE_FOR_TESTS = os.environ.get('WRITE_LOG_TO_FILE_FOR_TESTS', 'False').lower() == 'true'
+TEST_LOG_FILE_NAME = 'server_test.log' # Relative to main.py's location
+
+if WRITE_LOG_TO_FILE_FOR_TESTS:
+    try:
+        # Ensure the log file is in the same directory as main.py
+        # The path 'TEST_LOG_FILE_NAME' will be relative to the CWD of the server process.
+        # If server is run from src/jenkins_mcp_server/, this will place it correctly.
+        # Inside Docker, CWD is usually /app, and main.py is at /app/src/jenkins_mcp_server/main.py
+        # So, we need to be careful about the path.
+        # Let's assume CWD is /app (project root in container)
+        # and main.py is at src/jenkins_mcp_server/main.py
+        # So log file should be src/jenkins_mcp_server/server_test.log
+        
+        # Determine the directory of the current script (main.py)
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        actual_log_file_path = os.path.join(script_dir, TEST_LOG_FILE_NAME)
+
+        file_handler = logging.FileHandler(actual_log_file_path, mode='w') # 'w' to overwrite for each test run
+        file_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler.setFormatter(file_formatter)
+        file_handler.setLevel(LOG_LEVEL) # Respect the overall LOG_LEVEL for the file
+        
+        logger.addHandler(file_handler)
+        logger.info(f"Test logging enabled: Writing server logs to {actual_log_file_path} (Level: {LOG_LEVEL})")
+    except Exception as e:
+        logger.error(f"Failed to configure file logging for tests: {e}", exc_info=True)
+
+
 # --- Input Validation ---
 if not all([JENKINS_URL, JENKINS_USER, JENKINS_API_TOKEN]):
     logger.critical("Jenkins credentials (JENKINS_URL, JENKINS_USER, JENKINS_API_TOKEN) not found in environment variables.")
@@ -144,42 +174,60 @@ def health_check():
 
 # Helper function for recursive job listing
 def _get_and_filter_jobs_recursively(all_server_items, current_folder_prefix, depth, max_allowed_depth):
+    logger.debug(f"_get_and_filter_jobs_recursively: ENTER - prefix='{current_folder_prefix}', depth={depth}, max_depth={max_allowed_depth}")
     if depth > max_allowed_depth:
-        logger.debug(f"Max recursion depth {max_allowed_depth} reached for prefix '{current_folder_prefix}'. Stopping this path.")
+        logger.debug(f"  Max recursion depth {max_allowed_depth} reached for prefix '{current_folder_prefix}'. Stopping this path.")
         return []
     
     local_jobs = []
-    logger.debug(f"Filtering for children of '{current_folder_prefix if current_folder_prefix else 'root'}' at depth {depth}. Total items to scan: {len(all_server_items)}")
+    logger.debug(f"  Filtering for children of '{current_folder_prefix if current_folder_prefix else 'root'}' at depth {depth}. Total items to scan: {len(all_server_items)}")
 
     for item in all_server_items:
+        logger.debug(f"    Processing item raw: {item}")
         item_fullname = item.get('fullname', item.get('name'))
         item_url = item.get('url')
         item_class = item.get('_class', '')
+        logger.debug(f"      Item details: fullname='{item_fullname}', class='{item_class}', url='{item_url}'")
 
         if not item_fullname:
-            logger.warning(f"Skipping item with no fullname/name: {item}")
+            logger.warning(f"      Skipping item with no fullname/name: {item}")
             continue
 
         is_folder = 'folder' in item_class.lower() or 'multibranch' in item_class.lower()
+        logger.debug(f"      Is folder? {is_folder}")
         is_relevant_child = False
         
         if current_folder_prefix: # We are looking for children of a specific folder
+            logger.debug(f"      Current prefix is '{current_folder_prefix}'. Checking if '{item_fullname}' starts with '{current_folder_prefix}/'")
             if item_fullname.startswith(current_folder_prefix + '/'):
                 relative_name = item_fullname[len(current_folder_prefix) + 1:]
+                logger.debug(f"        Relative name: '{relative_name}'")
                 if '/' not in relative_name: # Direct child
                     is_relevant_child = True
+                    logger.debug(f"        Is direct child (no '/' in relative_name).")
+                else:
+                    logger.debug(f"        Not a direct child ('/' in relative_name).")
+            else:
+                logger.debug(f"        Does not start with prefix '{current_folder_prefix}/'.")
         else: # We are looking for children of the root
+            logger.debug(f"      Current prefix is None (root). Checking if '{item_fullname}' is top-level (no '/' in name).")
             if '/' not in item_fullname: # Top-level item
                 is_relevant_child = True
+                logger.debug(f"        Is top-level item.")
+            else:
+                logger.debug(f"        Not a top-level item ('/' in fullname).")
         
+        logger.debug(f"      Is relevant child? {is_relevant_child}")
         if is_relevant_child:
             item_representation = {"name": item_fullname, "url": item_url, "_class": item_class}
             if is_folder:
                 item_representation["type"] = "folder"
+            logger.debug(f"      Adding to local_jobs: {item_representation}")
             local_jobs.append(item_representation)
             
             if is_folder and depth < max_allowed_depth: # Only recurse if it's a folder and we haven't hit max depth
-                logger.info(f"Recursively processing identified folder: {item_fullname} (current depth {depth}, max_allowed_depth {max_allowed_depth})")
+                logger.info(f"      Recursively processing identified folder: {item_fullname} (current depth {depth}, max_allowed_depth {max_allowed_depth})")
+                logger.debug(f"      RECURSING for folder '{item_fullname}' with new prefix '{item_fullname}', new_depth={depth + 1}")
                 nested_jobs = _get_and_filter_jobs_recursively(
                     all_server_items,       # Pass the same full list
                     item_fullname,          # New prefix is the current folder's fullname
@@ -187,6 +235,11 @@ def _get_and_filter_jobs_recursively(all_server_items, current_folder_prefix, de
                     max_allowed_depth       # Pass along max_allowed_depth
                 )
                 local_jobs.extend(nested_jobs)
+    # Truncate local_jobs in log if too long
+    log_local_jobs = str(local_jobs)
+    if len(log_local_jobs) > 200: # Arbitrary limit for log line length
+        log_local_jobs = str(local_jobs[:2]) + f"... ({len(local_jobs) - 2} more items)" if len(local_jobs) > 2 else str(local_jobs[:2])
+    logger.debug(f"_get_and_filter_jobs_recursively: EXIT - prefix='{current_folder_prefix}', depth={depth}, returning {len(local_jobs)} items: {log_local_jobs}")
     return local_jobs
 
 @app.route('/jobs', methods=['GET'])
@@ -204,22 +257,28 @@ def list_jobs():
     folder_name = request.args.get('folder_name')
     recursive_str = request.args.get('recursive', 'false').lower()
     recursive = recursive_str == 'true'
+    logger.debug(f"list_jobs: ENTER - folder_name='{folder_name}', recursive_str='{recursive_str}' -> recursive={recursive}")
 
     cache_key = f"list_jobs::{folder_name}::recursive={recursive}"
     cached_result = job_list_cache.get(cache_key)
     if cached_result:
         logger.info(f"Returning cached job list for key: {cache_key}")
+        logger.debug(f"list_jobs: EXIT (from cache)")
         return jsonify({"jobs": cached_result, "source": "cache"})
 
     try:
         @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
         def fetch_all_jenkins_items_from_server():
-            logger.info("Fetching all jobs/items from Jenkins server (this might take a moment)...")
-            # This is the crucial call that fetches everything.
-            # The comment about python-jenkins 1.8.2 not taking folder_name for get_jobs() is key.
-            return jenkins_server.get_jobs() 
+            logger.info("Fetching all jobs/items recursively from Jenkins server (this might take a moment)...")
+            # Changed to get_all_jobs() to fetch recursively from Jenkins.
+            # This will return a flat list of all jobs, including those in folders.
+            return jenkins_server.get_all_jobs()
         
         all_server_items_flat_list = fetch_all_jenkins_items_from_server()
+        logger.info(f"list_jobs: Fetched {len(all_server_items_flat_list)} total items from Jenkins using get_all_jobs().") # Changed log to info
+        logger.debug(f"list_jobs: Fetched {len(all_server_items_flat_list)} total items from Jenkins.")
+        if all_server_items_flat_list:
+             logger.debug(f"list_jobs: First few fetched items: {all_server_items_flat_list[:min(3, len(all_server_items_flat_list))]}")
         
         max_depth_for_call = 5 if recursive else 0 
         logger.info(f"Filtering all {len(all_server_items_flat_list)} Jenkins items for base folder: '{folder_name if folder_name else 'root'}', recursive: {recursive}, max_depth: {max_depth_for_call}")
@@ -230,6 +289,9 @@ def list_jobs():
             depth=0,
             max_allowed_depth=max_depth_for_call
         )
+        logger.debug(f"list_jobs: Received {len(processed_jobs)} items from _get_and_filter_jobs_recursively (before deduplication).")
+        if processed_jobs:
+            logger.debug(f"list_jobs: Sample processed_jobs: {processed_jobs[:min(3, len(processed_jobs))]}")
         
         # Deduplication based on fullname (should be unique)
         deduplicated_jobs = []
@@ -238,19 +300,27 @@ def list_jobs():
             if job['name'] not in seen_fullnames:
                 deduplicated_jobs.append(job)
                 seen_fullnames.add(job['name'])
+            else:
+                logger.debug(f"list_jobs: Deduplicating job: {job['name']}")
         
         job_list_cache[cache_key] = deduplicated_jobs
         logger.info(f"Found {len(deduplicated_jobs)} jobs/folders after processing for folder '{folder_name if folder_name else 'root'}' (recursive={recursive}).")
+        if deduplicated_jobs:
+            logger.debug(f"list_jobs: Deduplicated list sample: {deduplicated_jobs[:min(3, len(deduplicated_jobs))]}")
+        logger.debug(f"list_jobs: EXIT (success)")
         return jsonify({"jobs": deduplicated_jobs, "source": "api"})
     
     except RetryError as e: # Catch RetryError from fetch_all_jenkins_items_from_server
         logger.error(f"Jenkins API error after retries while fetching all jobs: {e}")
+        logger.debug(f"list_jobs: EXIT (RetryError)")
         return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
     except jenkins.JenkinsException as e: # Catch other Jenkins specific errors
         logger.error(f"Jenkins API error while listing jobs: {e}")
+        logger.debug(f"list_jobs: EXIT (JenkinsException)")
         return make_error_response(f"Jenkins API error: {str(e)}", 500)
     except Exception as e:
         logger.error(f"Unexpected error while listing jobs: {e}", exc_info=True) # Add exc_info for better debugging
+        logger.debug(f"list_jobs: EXIT (Exception)")
         return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
 
 
