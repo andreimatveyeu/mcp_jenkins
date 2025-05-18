@@ -75,7 +75,7 @@ def get_llm_instruction(query, model):
        - Users might provide:
          a) An exact job name/path (e.g., "MyFolder/MyJob").
          b) A descriptive phrase for a job (e.g., "the windows test machine").
-         c) Multiple terms that could form parts of a job path (e.g., "trading pipelines production").
+         c) Multiple terms that could form parts of a job path (e.g., "imaging pipelines production").
        - Your goal is to map the user's input to the MOST SPECIFIC and ACCURATE job name from the provided list.
        - **Strategy for mapping user query to a `job_name` or `folder_name`:**
 
@@ -83,64 +83,64 @@ def get_llm_instruction(query, model):
          Your primary goal here is to find the most specific (longest) path from the user's query that corresponds to an actual job or folder hierarchy present in [{job_names_list}].
          - **Process:**
            1. **Extract Key Naming Components:** From the user's query, identify all words or phrases that seem to represent parts of a job or folder name. Ignore generic words like "list", "builds", "status", "job", "folder", "subfolder" unless they are part of a formal name in [{job_names_list}].
-              - Example Query: "list builds trading pipelines, production subfolder, data_build job"
-              - Key Naming Components: "trading pipelines", "production", "data_build"
+              - Example Query: "list builds imaging pipelines, production subfolder, data_build job"
+              - Key Naming Components: "imaging pipelines", "production", "data_build"
               - Example Query: "status of MyFolder job"
               - Key Naming Components: "MyFolder"
            2. **Normalize and Combine Components:**
-              - Attempt to match and combine consecutive components from the query to known segments in [{job_names_list}]. For instance, "trading pipelines" might map to a single segment "TradingPipelines" if such a job/folder exists.
+              - Attempt to match and combine consecutive components from the query to known segments in [{job_names_list}]. For instance, "imaging pipelines" might map to a single segment "ImagingPipelines" if such a job/folder exists.
               - Be flexible with casing and minor variations if it helps find a match in [{job_names_list}].
            3. **Construct Candidate Paths:** Systematically try to form paths by joining the extracted and normalized components with slashes ('/').
               - Start with the first component.
               - Then try the first two components joined (e.g., "Component1/Component2").
               - Then the first three, and so on, up to all components.
-              - Example (from "trading pipelines", "production", "data_build"):
-                - Candidate A: "TradingPipelines" (assuming "trading pipelines" maps to this)
-                - Candidate B: "TradingPipelines/production"
-                - Candidate C: "TradingPipelines/production/data_build"
+              - Example (from "imaging pipelines", "production", "data_build"):
+                - Candidate A: "ImagingPipelines" (assuming "imaging pipelines" maps to this)
+                - Candidate B: "ImagingPipelines/production"
+                - Candidate C: "ImagingPipelines/production/data_build"
            4. **Validate Against Job List:** For each candidate path constructed:
               - Check if it exactly matches a full job/folder name in [{job_names_list}].
               - Check if it is a prefix of any full job/folder name in [{job_names_list}].
            5. **Select Longest Valid Path:** The `identified_target_path` is the **longest** candidate path from step 3 that is either an exact match or a valid prefix found in step 4.
          - **Crucial Example for Path Identification (Illustrating component extraction and path construction):**
-           - User Query: "list builds trading pipelines, production subfolder, data_build job"
-           - Assume [{job_names_list}] includes "TradingPipelines/production/data_build", "TradingPipelines/production/another_job", "TradingPipelines/archive/jobB".
-           - Step 1 (Extract Key Naming Components): "trading pipelines", "production", "data_build".
-           - Step 2 (Normalize/Combine - hypothetical): "TradingPipelines", "production", "data_build".
+           - User Query: "list builds imaging pipelines, production subfolder, data_build job"
+           - Assume [{job_names_list}] includes "ImagingPipelines/production/data_build", "ImagingPipelines/production/another_job", "ImagingPipelines/archive/jobB".
+           - Step 1 (Extract Key Naming Components): "imaging pipelines", "production", "data_build".
+           - Step 2 (Normalize/Combine - hypothetical): "ImagingPipelines", "production", "data_build".
            - Step 3 (Construct Candidate Paths):
-             - "TradingPipelines"
-             - "TradingPipelines/production"
-             - "TradingPipelines/production/data_build"
+             - "ImagingPipelines"
+             - "ImagingPipelines/production"
+             - "ImagingPipelines/production/data_build"
            - Step 4 (Validate):
-             - "TradingPipelines" is a prefix. Valid.
-             - "TradingPipelines/production" is a prefix. Valid.
-             - "TradingPipelines/production/data_build" is an exact match. Valid.
-           - Step 5 (Select Longest): `identified_target_path` MUST BE "TradingPipelines/production/data_build".
+             - "ImagingPipelines" is a prefix. Valid.
+             - "ImagingPipelines/production" is a prefix. Valid.
+             - "ImagingPipelines/production/data_build" is an exact match. Valid.
+           - Step 5 (Select Longest): `identified_target_path` MUST BE "ImagingPipelines/production/data_build".
 
          - **Another Crucial Example (Simpler case):**
-           - User Query: "list jobs in trading pipelines production folder"
-           - Assume [{job_names_list}] includes "TradingPipelines/production/jobA", "TradingPipelines/archive/jobB".
-           - Step 1 (Extract Key Naming Components): "trading pipelines", "production".
-           - Step 2 (Normalize/Combine): "TradingPipelines", "production".
-           - Step 3 (Construct): "TradingPipelines", "TradingPipelines/production".
-           - Step 4 (Validate): "TradingPipelines" (prefix), "TradingPipelines/production" (prefix).
-           - Step 5 (Select Longest): `identified_target_path` MUST BE "TradingPipelines/production".
+           - User Query: "list jobs in imaging pipelines production folder"
+           - Assume [{job_names_list}] includes "ImagingPipelines/production/jobA", "ImagingPipelines/archive/jobB".
+           - Step 1 (Extract Key Naming Components): "imaging pipelines", "production".
+           - Step 2 (Normalize/Combine): "ImagingPipelines", "production".
+           - Step 3 (Construct): "ImagingPipelines", "ImagingPipelines/production".
+           - Step 4 (Validate): "ImagingPipelines" (prefix), "ImagingPipelines/production" (prefix).
+           - Step 5 (Select Longest): `identified_target_path` MUST BE "ImagingPipelines/production".
 
          **Step 2: Determine if `identified_target_path` is a Job or a Folder**
             - The `identified_target_path` is a **FOLDER** if it appears as an exact prefix for other, longer job names in [{job_names_list}] (e.g., if `identified_target_path` is "MyFolder" and "MyFolder/MyJob" exists in the list).
             - The `identified_target_path` is a **JOB** if it exists in [{job_names_list}] and is NOT a prefix for any other longer job names in the list.
-            - Example: If `identified_target_path` is "TradingPipelines/production" (determined from Step 1):
-                - It's a FOLDER if [{job_names_list}] contains "TradingPipelines/production/jobX".
-                - It's a JOB if [{job_names_list}] contains "TradingPipelines/production" but no "TradingPipelines/production/jobX" (or similar longer paths starting with this prefix).
+            - Example: If `identified_target_path` is "ImagingPipelines/production" (determined from Step 1):
+                - It's a FOLDER if [{job_names_list}] contains "ImagingPipelines/production/jobX".
+                - It's a JOB if [{job_names_list}] contains "ImagingPipelines/production" but no "ImagingPipelines/production/jobX" (or similar longer paths starting with this prefix).
 
          **Step 3: Action Selection based on Target Type and User Intent**
             - **If `identified_target_path` is a JOB:**
                 - For actions like `get_build_status`, `list_job_builds`, `trigger_build`, `get_build_log`, use the `identified_target_path` as the `job_name`.
             - **If `identified_target_path` is a FOLDER:**
-                - If the user's original intent was `list_jobs` (e.g., "list jobs in trading pipelines production"), use the `identified_target_path` for the `folder_name` parameter of the `list_jobs` action. Set `recursive: false` by default unless specified.
-                - If the user's original intent was build-related (e.g., `get_build_status`, `list_job_builds` for "trading pipelines production") BUT the `identified_target_path` (e.g., "TradingPipelines/production") is determined to be a FOLDER:
+                - If the user's original intent was `list_jobs` (e.g., "list jobs in imaging pipelines production"), use the `identified_target_path` for the `folder_name` parameter of the `list_jobs` action. Set `recursive: false` by default unless specified.
+                - If the user's original intent was build-related (e.g., `get_build_status`, `list_job_builds` for "imaging pipelines production") BUT the `identified_target_path` (e.g., "ImagingPipelines/production") is determined to be a FOLDER:
                     - **You MUST NOT use the folder path as `job_name` for these build-specific actions.**
-                    - Instead, you MUST switch the action to `list_jobs` and use the `identified_target_path` as the `folder_name` parameter (e.g., `folder_name="TradingPipelines/production"`). Set `recursive: true` to help the user discover specific jobs within that folder hierarchy, as their original query ("{query}") was about builds or specific job activities within this path.
+                    - Instead, you MUST switch the action to `list_jobs` and use the `identified_target_path` as the `folder_name` parameter (e.g., `folder_name="ImagingPipelines/production"`). Set `recursive: true` to help the user discover specific jobs within that folder hierarchy, as their original query ("{query}") was about builds or specific job activities within this path.
             - **If Ambiguous or No Clear Path:** If you cannot confidently determine an `identified_target_path` or it's unclear if it's a job/folder, defaulting to `list_jobs` (potentially with a broader inferred `folder_name` or at the root) is a safe fallback.
 
        - **Illustrative Examples based on the above 3-step strategy:**
@@ -155,23 +155,23 @@ def get_llm_instruction(query, model):
               }}
             }}`
 
-         2. Query: "list builds trading pipelines production"
-            - Step 1: `identified_target_path` becomes "TradingPipelines/production" (as per "Crucial Example").
-            - Step 2: Assume "TradingPipelines/production/jobA" exists in [{job_names_list}]. So, "TradingPipelines/production" is a FOLDER.
+         2. Query: "list builds imaging pipelines production"
+            - Step 1: `identified_target_path` becomes "ImagingPipelines/production" (as per "Crucial Example").
+            - Step 2: Assume "ImagingPipelines/production/jobA" exists in [{job_names_list}]. So, "ImagingPipelines/production" is a FOLDER.
             - Step 3: Original intent "list builds" is build-related. Target is a FOLDER.
-            - Output MUST be: `{{ "action": "list_jobs", "parameters": {{ "folder_name": "TradingPipelines/production", "recursive": true }} }}`
+            - Output MUST be: `{{ "action": "list_jobs", "parameters": {{ "folder_name": "ImagingPipelines/production", "recursive": true }} }}`
 
-         3. Query: "status of TradingPipelines/production/jobA build 5"
-            - Step 1: `identified_target_path` is "TradingPipelines/production/jobA".
-            - Step 2: Assume "TradingPipelines/production/jobA" is not a prefix for any other job. So, it's a JOB.
+         3. Query: "status of ImagingPipelines/production/jobA build 5"
+            - Step 1: `identified_target_path` is "ImagingPipelines/production/jobA".
+            - Step 2: Assume "ImagingPipelines/production/jobA" is not a prefix for any other job. So, it's a JOB.
             - Step 3: Original intent "get_build_status". Target is a JOB.
-            - Output: `{{ "action": "get_build_status", "parameters": {{ "job_name": "TradingPipelines/production/jobA", "build_number": 5 }} }}`
+            - Output: `{{ "action": "get_build_status", "parameters": {{ "job_name": "ImagingPipelines/production/jobA", "build_number": 5 }} }}`
 
-         3. Query: "show jobs in TradingPipelines"
-            - Step 1: `identified_target_path` is "TradingPipelines".
-            - Step 2: Assume "TradingPipelines/jobC" exists. So, "TradingPipelines" is a FOLDER.
+         3. Query: "show jobs in ImagingPipelines"
+            - Step 1: `identified_target_path` is "ImagingPipelines".
+            - Step 2: Assume "ImagingPipelines/jobC" exists. So, "ImagingPipelines" is a FOLDER.
             - Step 3: Original intent "list_jobs". Target is a FOLDER.
-            - Output: `{{ "action": "list_jobs", "parameters": {{ "folder_name": "TradingPipelines", "recursive": false }} }}`
+            - Output: `{{ "action": "list_jobs", "parameters": {{ "folder_name": "ImagingPipelines", "recursive": false }} }}`
 
     4. If the query is complex, ambiguous, or seems to ask for multiple distinct actions,
        prioritize the most specific and actionable part according to the 3-step strategy above.
