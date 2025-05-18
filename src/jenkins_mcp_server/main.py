@@ -861,10 +861,69 @@ def create_jenkins_job():
         logger.error(f"Unexpected error during job creation for '{full_job_name}': {e}", exc_info=True)
         return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
 
+@app.route('/folder/create', methods=['POST'])
+@require_api_key
+@limiter.limit("20 per hour") # Limit folder creation rate
+def create_jenkins_folder():
+    """
+    Creates a new Jenkins folder.
+    Payload:
+    {
+        "folder_name": "MyNewFolder"
+    }
+    """
+    raw_payload = request.get_json(silent=True)
+    if not raw_payload or 'folder_name' not in raw_payload:
+        logger.warning("Create folder request with missing payload or folder_name.")
+        return make_error_response("Request payload is missing or 'folder_name' is not provided.", 400)
+
+    folder_name = raw_payload['folder_name']
+    logger.info(f"Attempting to create folder: {folder_name}")
+
+    try:
+        @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
+        def _check_folder_exists(name):
+            # jenkins_server.job_exists works for folders too
+            return jenkins_server.job_exists(name)
+
+        @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
+        def _create_jenkins_folder_api(name):
+            # Use the create_folder method
+            jenkins_server.create_folder(name)
+
+        if _check_folder_exists(folder_name):
+            logger.warning(f"Folder '{folder_name}' already exists. Creation aborted.")
+            return make_error_response(f"Folder '{folder_name}' already exists.", 409) # 409 Conflict
+
+        logger.info(f"Creating folder '{folder_name}'")
+        _create_jenkins_folder_api(folder_name)
+
+        # Attempt to get folder info to confirm creation and get URL
+        folder_info_after_creation = jenkins_server.get_job_info(folder_name) # get_job_info works for folders
+        folder_url = folder_info_after_creation.get('url', 'N/A')
+
+        logger.info(f"Successfully created folder '{folder_name}'. URL: {folder_url}")
+        return jsonify({
+            "message": "Folder created successfully",
+            "folder_name": folder_name,
+            "folder_url": folder_url
+        }), 201 # Created
+
+    except jenkins.JenkinsException as e:
+        logger.error(f"Jenkins API error during folder creation for '{folder_name}': {e}")
+        return make_error_response(f"Jenkins API error: {str(e)}", 500)
+    except RetryError as e:
+        logger.error(f"Jenkins API error after retries during folder creation for '{folder_name}': {e}")
+        return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
+    except Exception as e:
+        logger.error(f"Unexpected error during folder creation for '{folder_name}': {e}", exc_info=True)
+        return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
+
+
 @app.route('/job/<path:job_path>/delete', methods=['POST'])
 @require_api_key
-@limiter.limit("20 per hour") # Limit job deletion rate
-def delete_jenkins_job(job_path):
+@limiter.limit("20 per hour") # Limit job/folder deletion rate
+def delete_jenkins_item(job_path): # Renamed to be more generic for jobs and folders
     """
     Deletes a Jenkins job.
     job_path can include folders, e.g., 'MyJob' or 'MyFolder/MyJob'.

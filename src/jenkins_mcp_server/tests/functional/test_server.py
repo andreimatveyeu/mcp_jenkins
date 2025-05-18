@@ -223,3 +223,140 @@ def test_create_and_delete_job(server_process):
             print(f"Warning: Failed to delete job '{job_name}' via MCP server during cleanup: {e}")
         except Exception as e:
             print(f"Warning: An unexpected error occurred during job deletion cleanup via MCP server: {e}")
+
+def test_create_and_delete_folder(server_process):
+    """Test creating, verifying, and deleting a Jenkins folder via the MCP server."""
+    assert server_process is not None, "Server process fixture failed to run."
+    assert MCP_API_KEY_FOR_TESTS, "MCP_API_KEY environment variable must be set for these tests"
+
+    folder_name = f"test-folder-{int(time.time())}" # Unique folder name
+
+    # Payload for the MCP server's /folder/create endpoint
+    create_payload = {
+        "folder_name": folder_name
+    }
+
+    headers = {"X-API-Key": MCP_API_KEY_FOR_TESTS, "Content-Type": "application/json"}
+
+    # Clean up any pre-existing folder with the same name
+    delete_url_cleanup = f"{SERVER_URL}/job/{folder_name}/delete"
+    print(f"Attempting to clean up pre-existing folder '{folder_name}' via MCP server at {delete_url_cleanup}")
+    try:
+        cleanup_response = requests.post(delete_url_cleanup, headers=headers, timeout=10)
+        if cleanup_response.status_code == 200:
+            print(f"Pre-existing folder '{folder_name}' cleaned up successfully.")
+        elif cleanup_response.status_code == 404:
+            print(f"No pre-existing folder '{folder_name}' found for cleanup.")
+        else:
+            print(f"Warning: Unexpected status code during cleanup of '{folder_name}': {cleanup_response.status_code}. Response: {cleanup_response.text}")
+    except requests.RequestException as e:
+        print(f"Warning: Request error during cleanup of '{folder_name}': {e}")
+    except Exception as e:
+        print(f"Warning: An unexpected error occurred during cleanup of '{folder_name}': {e}")
+
+    create_url = f"{SERVER_URL}/folder/create"
+
+    # Retry logic for folder creation
+    max_create_retries = 5
+    create_retry_delay = 2 # seconds
+    created_successfully = False
+
+    for i in range(max_create_retries):
+        print(f"Attempting to create folder '{folder_name}' via MCP server at {create_url} (Attempt {i+1}/{max_create_retries})")
+    create_url = f"{SERVER_URL}/folder/create"
+    headers = {"X-API-Key": MCP_API_KEY_FOR_TESTS, "Content-Type": "application/json"}
+
+    # Clean up any pre-existing folder with the same name
+    delete_url_cleanup = f"{SERVER_URL}/job/{folder_name}/delete"
+    print(f"Attempting to clean up pre-existing folder '{folder_name}' via MCP server at {delete_url_cleanup}")
+    try:
+        cleanup_response = requests.post(delete_url_cleanup, headers=headers, timeout=10)
+        if cleanup_response.status_code == 200:
+            print(f"Pre-existing folder '{folder_name}' cleaned up successfully.")
+        elif cleanup_response.status_code == 404:
+            print(f"No pre-existing folder '{folder_name}' found for cleanup.")
+        else:
+            print(f"Warning: Unexpected status code during cleanup of '{folder_name}': {cleanup_response.status_code}. Response: {cleanup_response.text}")
+    except requests.RequestException as e:
+        print(f"Warning: Request error during cleanup of '{folder_name}': {e}")
+    except Exception as e:
+        print(f"Warning: An unexpected error occurred during cleanup of '{folder_name}': {e}")
+
+    # Attempt to create the folder, handling "already exists" as a non-failure for the creation step
+    print(f"Attempting to create folder: {folder_name}")
+    try:
+        create_response = requests.post(create_url, headers=headers, json=create_payload, timeout=10)
+        create_response.raise_for_status()
+        assert create_response.status_code == 201, f"Failed to create folder via MCP server. Status code: {create_response.status_code}. Response: {create_response.text}"
+        print(f"Folder '{folder_name}' created successfully via MCP server.")
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 409: # Conflict - likely already exists
+            print(f"Folder '{folder_name}' already exists (status 409). Assuming it exists and proceeding with verification.")
+        else:
+            pytest.fail(f"HTTP error during folder creation: {e}")
+    except requests.RequestException as e:
+        pytest.fail(f"Request error during folder creation: {e}")
+    except Exception as e:
+        pytest.fail(f"An unexpected error occurred during folder creation: {e}")
+
+    # We might need to wait a moment for Jenkins to register the folder
+    time.sleep(2) # Give Jenkins a moment
+
+    # Verify the folder exists via MCP server's list jobs endpoint
+    verify_exists = False
+    # Check in the recursive job list from MCP server
+    list_jobs_url = f"{SERVER_URL}/jobs?recursive=true" # Use recursive to find it anywhere
+    print(f"Verifying folder '{folder_name}' existence via MCP server at {list_jobs_url}")
+    try:
+        list_response = requests.get(list_jobs_url, headers=headers, timeout=10)
+        list_response.raise_for_status()
+        assert list_response.status_code == 200, f"Failed to list jobs via MCP server for verification. Status code: {list_response.status_code}. Response: {list_response.text}"
+
+        jobs_data = list_response.json().get("jobs", [])
+        for item in jobs_data:
+            if item.get("name") == folder_name and item.get("type") == "folder": # Check for folder name and type
+                verify_exists = True
+                print(f"Folder '{folder_name}' verified to exist via MCP server listing.")
+                break
+
+        assert verify_exists, f"Folder '{folder_name}' not found in MCP server job listing after creation/assumption of existence."
+
+    except requests.RequestException as e:
+        pytest.fail(f"Test failed during folder verification via MCP server: {e}")
+    except Exception as e:
+        pytest.fail(f"An unexpected error occurred during folder verification: {e}")
+
+    finally:
+        # Clean up: Delete the folder via MCP server
+        delete_url = f"{SERVER_URL}/job/{folder_name}/delete" # Use folder_name for deletion
+        print(f"Attempting to delete folder '{folder_name}' via MCP server at {delete_url}")
+
+        # Retry logic for folder deletion
+        max_delete_retries = 5
+        delete_retry_delay = 2 # seconds
+        deleted_successfully = False
+
+        for i in range(max_delete_retries):
+            print(f"Attempting to delete folder '{folder_name}' via MCP server at {delete_url} (Attempt {i+1}/{max_delete_retries})")
+            try:
+                delete_response = requests.post(delete_url, headers=headers, timeout=10)
+                delete_response.raise_for_status()
+                assert delete_response.status_code == 200, f"Failed to delete folder '{folder_name}' via MCP server during cleanup. Status code: {delete_response.status_code}. Response: {delete_response.text}"
+                print(f"Folder '{folder_name}' deleted successfully via MCP server.")
+                deleted_successfully = True
+                break # Exit retry loop on success
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404: # Not Found - might be a transient state after creation failure
+                     print(f"Folder '{folder_name}' not found for deletion (status 404). This might be a transient state. Retrying...")
+                else:
+                    print(f"HTTP error during folder deletion (Attempt {i+1}): {e}. Retrying...")
+            except requests.RequestException as e:
+                print(f"Request error during folder deletion (Attempt {i+1}): {e}. Retrying...")
+            except Exception as e:
+                print(f"An unexpected error occurred during folder deletion (Attempt {i+1}): {e}")
+
+            if i < max_delete_retries - 1:
+                time.sleep(delete_retry_delay)
+
+        if not deleted_successfully:
+            print(f"Warning: Failed to delete folder '{folder_name}' after {max_delete_retries} attempts during cleanup.")
