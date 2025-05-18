@@ -1,2 +1,9 @@
 pylint
 requests
+google-generativeai
+Flask
+python-jenkins
+Flask-Limiter
+cachetools
+pydantic
+tenacity

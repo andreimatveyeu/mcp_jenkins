@@ -1,2 +1,12 @@
 #!/bin/sh
-docker run -d --rm --name=mcp_jenkins --network=host -it -p 5000:5000 -e JENKINS_URL=${JENKINS_URL} -e JENKINS_USER=${JENKINS_USER} -e JENKINS_API_TOKEN=${JENKINS_API_TOKEN} jenkins_mcp_server
+docker run \
+  --rm \
+  --name=mcp_jenkins \
+  --network=host \
+  -it \
+  -p 5000:5000 \
+  -e JENKINS_URL=${JENKINS_URL} \
+  -e JENKINS_USER=${JENKINS_USER} \
+  -e JENKINS_API_TOKEN=${JENKINS_API_TOKEN} \
+  -e MCP_API_KEY=${MCP_API_KEY} \
+  jenkins_mcp_server

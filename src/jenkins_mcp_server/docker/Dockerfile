@@ -12,4 +12,4 @@ ENV JENKINS_URL=${JENKINS_URL}
 ENV JENKINS_USER=${JENKINS_USER}
 ENV JENKINS_API_TOKEN=${JENKINS_API_TOKEN}
 
-CMD ["python", "main.py"]
+ENTRYPOINT ["/usr/local/bin/python", "/app/src/jenkins_mcp_server/main.py"]
