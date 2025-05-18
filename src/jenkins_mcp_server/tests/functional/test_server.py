@@ -149,10 +149,12 @@ def test_list_jobs_recursive(server_process):
         for job in actual_jobs_recursive: # Could use either list as counts are same
             if "/" in job.get("name", ""):
                 found_any_nested_job = True
-                print(f"Note: Found nested job '{job['name']}' while job counts were equal.")
                 break
-        if not found_any_nested_job:
-            print("Note: Recursive and non-recursive calls found the same number of actual jobs, "
-                  "and no nested jobs were identified in the list. This is expected if all jobs are top-level.")
+        assert found_any_nested_job, \
+            (f"Recursive and non-recursive calls found the same number of actual jobs ({count_actual_jobs_recursive}), "
+             f"but no jobs with '/' in their names (indicative of subfolders) were identified. "
+             f"Given that subfolder jobs are expected in this environment, this indicates they were not found by the recursive call "
+             f"or not named with the conventional '/' separator. "
+             f"Jobs found: {[j.get('name') for j in actual_jobs_recursive]}")
 
     print("Recursive job listing test completed.")

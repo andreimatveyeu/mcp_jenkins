@@ -61,6 +61,9 @@ docker run -t --rm \
     -e JENKINS_USER=${JENKINS_USER} \
     -e JENKINS_API_TOKEN=${JENKINS_API_TOKEN} \
     -e MCP_API_KEY=${MCP_API_KEY} \
+    -e LOG_LEVEL=${LOG_LEVEL:-INFO} \
+    -e DEBUG_MODE=${DEBUG_MODE:-False} \
+    -e WRITE_LOG_TO_FILE_FOR_TESTS=true \
     --network host \
     --entrypoint pytest \
     "$IMAGE_NAME" \
