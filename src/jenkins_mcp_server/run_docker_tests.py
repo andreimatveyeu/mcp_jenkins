@@ -2,6 +2,8 @@ import subprocess
 import sys
 import os
 
+os.environ["MCP_API_KEY"] = "2"
+
 def main():
     # Construct the path to the script relative to this file's location
     # This script is in src/jenkins_mcp_server/

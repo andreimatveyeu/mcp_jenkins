@@ -847,6 +847,42 @@ def create_jenkins_job():
         logger.error(f"Unexpected error during job creation for '{full_job_name}': {e}", exc_info=True)
         return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
 
+@app.route('/job/<path:job_path>/delete', methods=['POST'])
+@require_api_key
+@limiter.limit("20 per hour") # Limit job deletion rate
+def delete_jenkins_job(job_path):
+    """
+    Deletes a Jenkins job.
+    job_path can include folders, e.g., 'MyJob' or 'MyFolder/MyJob'.
+    """
+    if not job_path:
+        logger.warning("Delete job request with missing job_path.")
+        return make_error_response("Missing job_path parameter", 400)
+
+    logger.info(f"Attempting to delete job: {job_path}")
+
+    try:
+        @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
+        def _delete_jenkins_job_api(name):
+            jenkins_server.delete_job(name)
+
+        _delete_jenkins_job_api(job_path)
+        logger.info(f"Job '{job_path}' deleted successfully.")
+        return jsonify({"message": f"Job '{job_path}' deleted successfully."}), 200
+
+    except jenkins.NotFoundException:
+        logger.warning(f"Job '{job_path}' not found for deletion.")
+        return make_error_response(f"Job '{job_path}' not found.", 404)
+    except RetryError as e:
+        logger.error(f"Jenkins API error after retries during job deletion for '{job_path}': {e}")
+        return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
+    except jenkins.JenkinsException as e:
+        logger.error(f"Jenkins API error during job deletion for '{job_path}': {e}")
+        return make_error_response(f"Jenkins API error: {str(e)}", 500)
+    except Exception as e:
+        logger.error(f"Unexpected error during job deletion for '{job_path}': {e}", exc_info=True)
+        return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
+
 
 if __name__ == '__main__':
     # For development only. Use a proper WSGI server (e.g., Gunicorn) for production.
