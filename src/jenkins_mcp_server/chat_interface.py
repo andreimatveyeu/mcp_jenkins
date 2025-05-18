@@ -53,259 +53,10 @@ def get_llm_instruction(query, model):
     job_names_for_prompt = ", ".join(f'"{name}"' for name in job_names_list) if job_names_list else "No jobs found or error fetching jobs."
 
     # Define available functions/intents for the LLM
-    functions_schema = """
-    You are an expert in interpreting user queries for a Jenkins MCP server.
-    Your primary goal is to translate the user's natural language query into a
-    single, specific JSON object that represents a function call to the MCP server.
-    This JSON object MUST have two keys: "action" (a string) and "parameters" (an object).
-
-    Carefully analyze the user's query: "{query}"
-
-    Here is a list of available Jenkins job names on the server: [{job_names_list}]
-    Use this list to help resolve descriptive job names provided by the user to an actual job name.
-
-    Follow these rules strictly:
-    1. Identify ONE main intent from the query that maps to one of the available functions.
-    2. Extract all necessary parameters for that chosen function. If a required parameter is missing
-       and cannot be reasonably inferred, you may have to select a different function or make a
-       best guess if appropriate (e.g., default "limit" for listing).
-    3. Job Name Resolution:
-       - The `job_name` parameter is critical. Job names can be simple (e.g., "testwinlaptop") or paths representing jobs in folders (e.g., "MyFolder/MySubFolder/MyJob").
-       - The list of available Jenkins job names is: [{job_names_list}]. This list contains full job paths.
-       - Users might provide:
-         a) An exact job name/path (e.g., "MyFolder/MyJob").
-         b) A descriptive phrase for a job (e.g., "the windows test machine").
-         c) Multiple terms that could form parts of a job path (e.g., "imaging pipelines production").
-       - Your goal is to map the user's input to the MOST SPECIFIC and ACCURATE job name from the provided list.
-       - **Strategy for mapping user query to a `job_name` or `folder_name`:**
-
-         **Step 1: Identify the Fullest Possible Target Path from the Query**
-         Your primary goal here is to find the most specific (longest) path from the user's query that corresponds to an actual job or folder hierarchy present in [{job_names_list}].
-         - **Process:**
-           1. **Extract Key Naming Components:** From the user's query, identify all words or phrases that seem to represent parts of a job or folder name. Ignore generic words like "list", "builds", "status", "job", "folder", "subfolder" unless they are part of a formal name in [{job_names_list}].
-              - Example Query: "list builds imaging pipelines, production subfolder, data_build job"
-              - Key Naming Components: "imaging pipelines", "production", "data_build"
-              - Example Query: "status of MyFolder job"
-              - Key Naming Components: "MyFolder"
-           2. **Normalize and Combine Components:**
-              - Attempt to match and combine consecutive components from the query to known segments in [{job_names_list}]. For instance, "imaging pipelines" might map to a single segment "ImagingPipelines" if such a job/folder exists.
-              - Be flexible with casing and minor variations if it helps find a match in [{job_names_list}].
-           3. **Construct Candidate Paths:** Systematically try to form paths by joining the extracted and normalized components with slashes ('/').
-              - Start with the first component.
-              - Then try the first two components joined (e.g., "Component1/Component2").
-              - Then the first three, and so on, up to all components.
-              - Example (from "imaging pipelines", "production", "data_build"):
-                - Candidate A: "ImagingPipelines" (assuming "imaging pipelines" maps to this)
-                - Candidate B: "ImagingPipelines/production"
-                - Candidate C: "ImagingPipelines/production/data_build"
-           4. **Validate Against Job List:** For each candidate path constructed:
-              - Check if it exactly matches a full job/folder name in [{job_names_list}].
-              - Check if it is a prefix of any full job/folder name in [{job_names_list}].
-           5. **Select Longest Valid Path:** The `identified_target_path` is the **longest** candidate path from step 3 that is either an exact match or a valid prefix found in step 4.
-         - **Crucial Example for Path Identification (Illustrating component extraction and path construction):**
-           - User Query: "list builds imaging pipelines, production subfolder, data_build job"
-           - Assume [{job_names_list}] includes "ImagingPipelines/production/data_build", "ImagingPipelines/production/another_job", "ImagingPipelines/archive/jobB".
-           - Step 1 (Extract Key Naming Components): "imaging pipelines", "production", "data_build".
-           - Step 2 (Normalize/Combine - hypothetical): "ImagingPipelines", "production", "data_build".
-           - Step 3 (Construct Candidate Paths):
-             - "ImagingPipelines"
-             - "ImagingPipelines/production"
-             - "ImagingPipelines/production/data_build"
-           - Step 4 (Validate):
-             - "ImagingPipelines" is a prefix. Valid.
-             - "ImagingPipelines/production" is a prefix. Valid.
-             - "ImagingPipelines/production/data_build" is an exact match. Valid.
-           - Step 5 (Select Longest): `identified_target_path` MUST BE "ImagingPipelines/production/data_build".
-
-         - **Another Crucial Example (Simpler case):**
-           - User Query: "list jobs in imaging pipelines production folder"
-           - Assume [{job_names_list}] includes "ImagingPipelines/production/jobA", "ImagingPipelines/archive/jobB".
-           - Step 1 (Extract Key Naming Components): "imaging pipelines", "production".
-           - Step 2 (Normalize/Combine): "ImagingPipelines", "production".
-           - Step 3 (Construct): "ImagingPipelines", "ImagingPipelines/production".
-           - Step 4 (Validate): "ImagingPipelines" (prefix), "ImagingPipelines/production" (prefix).
-           - Step 5 (Select Longest): `identified_target_path` MUST BE "ImagingPipelines/production".
-
-         **Step 2: Determine if `identified_target_path` is a Job or a Folder**
-            - The `identified_target_path` is a **FOLDER** if it appears as an exact prefix for other, longer job names in [{job_names_list}] (e.g., if `identified_target_path` is "MyFolder" and "MyFolder/MyJob" exists in the list).
-            - The `identified_target_path` is a **JOB** if it exists in [{job_names_list}] and is NOT a prefix for any other longer job names in the list.
-            - Example: If `identified_target_path` is "ImagingPipelines/production" (determined from Step 1):
-                - It's a FOLDER if [{job_names_list}] contains "ImagingPipelines/production/jobX".
-                - It's a JOB if [{job_names_list}] contains "ImagingPipelines/production" but no "ImagingPipelines/production/jobX" (or similar longer paths starting with this prefix).
-
-         **Step 3: Action Selection based on Target Type and User Intent**
-            - **If `identified_target_path` is a JOB:**
-                - For actions like `get_build_status`, `list_job_builds`, `trigger_build`, `get_build_log`, use the `identified_target_path` as the `job_name`.
-            - **If `identified_target_path` is a FOLDER:**
-                - If the user's original intent was `list_jobs` (e.g., "list jobs in imaging pipelines production"), use the `identified_target_path` for the `folder_name` parameter of the `list_jobs` action. Set `recursive: false` by default unless specified.
-                - If the user's original intent was build-related (e.g., `get_build_status`, `list_job_builds` for "imaging pipelines production") BUT the `identified_target_path` (e.g., "ImagingPipelines/production") is determined to be a FOLDER:
-                    - **You MUST NOT use the folder path as `job_name` for these build-specific actions.**
-                    - Instead, you MUST switch the action to `list_jobs` and use the `identified_target_path` as the `folder_name` parameter (e.g., `folder_name="ImagingPipelines/production"`). Set `recursive: true` to help the user discover specific jobs within that folder hierarchy, as their original query ("{query}") was about builds or specific job activities within this path.
-            - **If Ambiguous or No Clear Path:** If you cannot confidently determine an `identified_target_path` or it's unclear if it's a job/folder, defaulting to `list_jobs` (potentially with a broader inferred `folder_name` or at the root) is a safe fallback.
-
-       - **Illustrative Examples based on the above 3-step strategy:**
-         1. Query: "list builds in the 'MyProject/ReleaseCandidates' folder"
-            (Assume [{job_names_list}] contains "MyProject/ReleaseCandidates/JobA", "MyProject/ReleaseCandidates/Nightly/JobB", and "MyProject/ReleaseCandidates" is identified as a FOLDER)
-            Output:
-            `{{
-              "action": "list_jobs",
-              "parameters": {{
-                "folder_name": "MyProject/ReleaseCandidates",
-                "recursive": true
-              }}
-            }}`
-
-         2. Query: "list builds imaging pipelines production"
-            - Step 1: `identified_target_path` becomes "ImagingPipelines/production" (as per "Crucial Example").
-            - Step 2: Assume "ImagingPipelines/production/jobA" exists in [{job_names_list}]. So, "ImagingPipelines/production" is a FOLDER.
-            - Step 3: Original intent "list builds" is build-related. Target is a FOLDER.
-            - Output MUST be: `{{ "action": "list_jobs", "parameters": {{ "folder_name": "ImagingPipelines/production", "recursive": true }} }}`
-
-         3. Query: "status of ImagingPipelines/production/jobA build 5"
-            - Step 1: `identified_target_path` is "ImagingPipelines/production/jobA".
-            - Step 2: Assume "ImagingPipelines/production/jobA" is not a prefix for any other job. So, it's a JOB.
-            - Step 3: Original intent "get_build_status". Target is a JOB.
-            - Output: `{{ "action": "get_build_status", "parameters": {{ "job_name": "ImagingPipelines/production/jobA", "build_number": 5 }} }}`
-
-         3. Query: "show jobs in ImagingPipelines"
-            - Step 1: `identified_target_path` is "ImagingPipelines".
-            - Step 2: Assume "ImagingPipelines/jobC" exists. So, "ImagingPipelines" is a FOLDER.
-            - Step 3: Original intent "list_jobs". Target is a FOLDER.
-            - Output: `{{ "action": "list_jobs", "parameters": {{ "folder_name": "ImagingPipelines", "recursive": false }} }}`
-
-    4. If the query is complex, ambiguous, or seems to ask for multiple distinct actions,
-       prioritize the most specific and actionable part according to the 3-step strategy above.
-    5. Your output MUST be ONLY the JSON object. No preliminary text, no explanations, no apologies,
-       just the JSON. Ensure the JSON is well-formed.
-
-    Available functions and their schemas:
-    1. get_build_status: Gets the status of a specific build.
-       Action name: "get_build_status"
-       Parameters:
-         - job_name (string, required): The FULL name of the Jenkins job (e.g., "MyFolder/MyJob"). This MUST be an actual job, not a folder. If the user's query points to a folder for this action, you should use `list_jobs` for that folder instead.
-         - build_number (string or integer, required): The build identifier (e.g., 123, "lastBuild").
-
-    2. list_job_builds: Lists recent builds for a specific job.
-       Action name: "list_job_builds"
-       Parameters:
-         - job_name (string, required): The FULL name of the Jenkins job (e.g., "MyFolder/MyJob"). This MUST be an actual job, not a folder. If the user's query points to a folder for this action, you should use `list_jobs` for that folder instead.
-         - limit (integer, optional, default: 5): Number of recent builds to show.
-
-    3. trigger_build: Triggers a new build for a specific job.
-       Action name: "trigger_build"
-       Parameters:
-         - job_name (string, required): The name of the Jenkins job.
-         - build_parameters (object, optional): A JSON object of parameters for the build (e.g., {{"GIT_BRANCH": "develop"}}).
-
-    4. list_jobs: Lists available Jenkins jobs.
-       Action name: "list_jobs"
-       Parameters:
-         - folder_name (string, optional): The base folder to search in.
-         - recursive (boolean, optional, default: false): Whether to search recursively.
-
-    5. get_build_log: Gets the console log for a specific build.
-       Action name: "get_build_log"
-       Parameters:
-         - job_name (string, required): The name of the Jenkins job (e.g., "testwinlaptop", "MyFolder/MyJob").
-         - build_number (string or integer, required): The build identifier.
-           Can be a specific number (e.g., 123, "123").
-           Supported keywords: "lastBuild", "lastSuccessfulBuild", "lastCompletedBuild".
-
-    User query: "{query}"
-    Available Jenkins jobs: [{job_names_list}]
-
-    Based on the user query and the available job list, identify the most appropriate action and extract its parameters.
-    Return a single JSON object with "action" and "parameters" keys.
-
-    Example (assuming "testwinlaptop" and "main-ci-pipeline" are in [{job_names_list}]):
-
-    Query: "what happened in testwinlaptop? what is the latest build?"
-    Output:
-    {{
-      "action": "get_build_status",
-      "parameters": {{
-        "job_name": "testwinlaptop",
-        "build_number": "lastBuild"
-      }}
-    }}
-
-    Query: "what is the status of the test ms windows machine build?"
-    Output:
-    {{
-      "action": "get_build_status",
-      "parameters": {{
-        "job_name": "testwinlaptop", 
-        "build_number": "lastBuild"
-      }}
-    }}
-    
-    Query: "what happened with the main CI pipeline?"
-    Output:
-    {{
-      "action": "list_job_builds",
-      "parameters": {{
-        "job_name": "main-ci-pipeline", 
-        "limit": 3
-      }}
-    }}
-
-    Query: "get log for MyJob build 7" (assuming "MyJob" is in [{job_names_list}])
-    Output:
-    {{
-      "action": "get_build_log",
-      "parameters": {{
-        "job_name": "MyJob",
-        "build_number": 7
-      }}
-    }}
-
-    Query: "tell me about the build for the windows laptop, specifically the build just before the last one" (assuming "testwinlaptop" is the best match in [{job_names_list}])
-    Output:
-    {{
-      "action": "list_job_builds",
-      "parameters": {{
-        "job_name": "testwinlaptop",
-        "limit": 5 
-      }}
-    }}
-
-    If the query is "build jobA with param1=value1 and param2=value2" (assuming "jobA" is in [{job_names_list}]):
-    Output:
-    {{
-      "action": "trigger_build",
-      "parameters": {{
-        "job_name": "jobA",
-        "build_parameters": {{
-          "param1": "value1",
-          "param2": "value2"
-        }}
-      }}
-    }}
-
-    If the query is just "what is the latest build for testwinlaptop?" (assuming "testwinlaptop" is in [{job_names_list}]):
-    Output:
-    {{
-        "action": "get_build_status",
-        "parameters": {{
-            "job_name": "testwinlaptop",
-            "build_number": "lastBuild"
-        }}
-    }}
-
-    If a query is compound like "Show me jobs in 'folderA' and what was the last build of 'jobX'?" (assuming "jobX" is in [{job_names_list}]):
-    Prioritize the most specific request or the one that seems most important. For example:
-    Output:
-    {{
-      "action": "get_build_status",
-      "parameters": {{
-        "job_name": "jobX",
-        "build_number": "lastBuild"
-      }}
-    }}
-    (This assumes getting the build status for jobX is the primary intent here).
-
-    Output ONLY the JSON object. Do not include any other text or explanations.
-    """
+    script_dir = os.path.dirname(__file__)
+    schema_file_path = os.path.join(script_dir, "functions_schema.md")
+    with open(schema_file_path, "r") as inp:
+        functions_schema = inp.read()
     prompt = functions_schema.format(query=query, job_names_list=job_names_for_prompt)
 
     if model == "gemini-2.0-flash-001":
@@ -345,6 +96,60 @@ def get_llm_instruction(query, model):
         return {"error": f"Error parsing LLM JSON response: {e}. Response was: {llm_text}"}
     except ValueError as e:
         return {"error": f"{str(e)} LLM response was: {llm_text}"}
+
+def _prompt_for_missing_details_create_job(params):
+    """Interactively prompts user for missing details for create_job action."""
+    if not params.get("job_name"):
+        params["job_name"] = input("Enter the desired job name: ").strip()
+        if not params["job_name"]:
+            return "Job name cannot be empty."
+
+    if not params.get("job_type"):
+        while True:
+            job_type_input = input("Enter job type (calendar/weather): ").strip().lower()
+            if job_type_input in ["calendar", "weather"]:
+                params["job_type"] = job_type_input
+                break
+            else:
+                print("Invalid job type. Please enter 'calendar' or 'weather'.")
+
+    if params["job_type"] == "calendar":
+        if not params.get("month"):
+            while True:
+                try:
+                    month_input = int(input("Enter month (1-12) for calendar job: ").strip())
+                    if 1 <= month_input <= 12:
+                        params["month"] = month_input
+                        break
+                    else:
+                        print("Month must be between 1 and 12.")
+                except ValueError:
+                    print("Invalid month. Please enter a number.")
+        if not params.get("year"):
+            while True:
+                try:
+                    year_input = int(input("Enter year (e.g., 2024) for calendar job: ").strip())
+                    # Basic year validation, can be more robust
+                    if 1900 <= year_input <= 2100:
+                        params["year"] = year_input
+                        break
+                    else:
+                        print("Year seems invalid. Please enter a valid year (e.g., 1900-2100).")
+                except ValueError:
+                    print("Invalid year. Please enter a number.")
+    elif params["job_type"] == "weather":
+        if not params.get("city"):
+            params["city"] = input("Enter city for weather job: ").strip()
+            if not params["city"]:
+                return "City name cannot be empty for weather job."
+    
+    if "job_description" not in params: # Optional, but good to ask if not provided by LLM
+        desc_input = input("Enter an optional job description (or press Enter to skip): ").strip()
+        if desc_input:
+            params["job_description"] = desc_input
+            
+    return params
+
 
 def execute_instruction(instruction):
     if "error" in instruction:
@@ -450,6 +255,34 @@ def execute_instruction(instruction):
         elif isinstance(result, dict) and "error" in result: # Pass through server error messages
              return f"Error from server: {result['error']}"
         return result # Return other error strings or unexpected structures from call_mcp_server
+
+    elif action == "create_job":
+        # Prompt for missing details if necessary
+        updated_params = _prompt_for_missing_details_create_job(params.copy()) # Pass a copy
+        if isinstance(updated_params, str): # Error message returned
+            return updated_params
+
+        # Server expects payload like:
+        # { "job_name": "name", "job_type": "calendar", "month": 1, "year": 2023, "city": null, "job_description": "desc" }
+        payload_for_server = {
+            "job_name": updated_params.get("job_name"),
+            "job_type": updated_params.get("job_type"),
+            "month": updated_params.get("month"),
+            "year": updated_params.get("year"),
+            "city": updated_params.get("city"),
+            "job_description": updated_params.get("job_description")
+        }
+        
+        # Filter out None values as server Pydantic models handle Optional fields
+        payload_for_server = {k: v for k, v in payload_for_server.items() if v is not None}
+
+        result = call_mcp_server("/job/create", method="POST", data=payload_for_server)
+        if isinstance(result, dict) and "message" in result:
+            return f"{result['message']}. Job: {result.get('job_name')}, URL: {result.get('job_url')}"
+        elif isinstance(result, dict) and "error" in result:
+             return f"Error from server: {result['error']}"
+        return result
+
 
     else:
         return f"Unknown action: {action}"

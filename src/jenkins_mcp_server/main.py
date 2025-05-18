@@ -7,8 +7,8 @@ from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from tenacity import retry, stop_after_attempt, wait_exponential, RetryError
 from cachetools import TTLCache
-from pydantic import BaseModel, ValidationError
-from typing import Optional, Dict, Any
+from pydantic import BaseModel, ValidationError, root_validator
+from typing import Optional, Dict, Any, Literal
 
 # --- Configuration ---
 JENKINS_URL = os.environ.get('JENKINS_URL')
@@ -136,6 +136,34 @@ class BuildJobPayload(BaseModel):
     parameters: Optional[Dict[str, Any]] = None
     # Example of a specific known parameter:
     # GIT_BRANCH: Optional[str] = None
+
+class CreateJobPayload(BaseModel):
+    job_name: str
+    job_type: Literal["calendar", "weather"]
+    month: Optional[int] = None
+    year: Optional[int] = None
+    city: Optional[str] = None
+    job_description: Optional[str] = "Job created via MCP"
+
+    @root_validator(skip_on_failure=True)
+    def check_conditional_fields(cls, values):
+        job_type = values.get('job_type')
+        month = values.get('month')
+        year = values.get('year')
+        city = values.get('city')
+
+        if job_type == "calendar":
+            if month is None or year is None:
+                raise ValueError("For calendar jobs, 'month' and 'year' are required.")
+            if not (1 <= month <= 12):
+                raise ValueError("Month must be between 1 and 12.")
+            # Basic year check, can be more sophisticated
+            if not (1900 <= year <= 2100):
+                raise ValueError("Year must be between 1900 and 2100.")
+        elif job_type == "weather":
+            if not city:
+                raise ValueError("For weather jobs, 'city' is required.")
+        return values
 
 # --- Helper for Standard Error Response ---
 def make_error_response(message, status_code):
@@ -695,6 +723,128 @@ def trigger_build(job_path):
         return make_error_response(f"Jenkins API error: {str(e)}", 500)
     except Exception as e:
         logger.error(f"Unexpected error triggering build for job '{job_path}': {e}")
+        return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
+
+
+# --- Job Creation XML Template ---
+JOB_XML_CONFIG_TEMPLATE = """<?xml version='1.1' encoding='UTF-8'?>
+<project>
+  <description>{description}</description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <scm class="jenkins.scm.NullSCM"/>
+  <canRoam>true</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers/>
+  <concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.Shell>
+      <command>{shell_command}</command>
+    </hudson.tasks.Shell>
+  </builders>
+  <publishers/>
+  <buildWrappers/>
+</project>"""
+
+@app.route('/job/create', methods=['POST'])
+@require_api_key
+@limiter.limit("20 per hour") # Limit job creation rate
+def create_jenkins_job():
+    """
+    Creates a new Jenkins job in the 'ProjectCI' folder.
+    Job types: 'calendar' (runs cal command) or 'weather' (runs curl for wttr.in).
+    Payload:
+    {
+        "job_name": "my-calendar-job",
+        "job_type": "calendar",
+        "month": 12,
+        "year": 2024,
+        "job_description": "Optional description"
+    }
+    or
+    {
+        "job_name": "my-weather-job",
+        "job_type": "weather",
+        "city": "London",
+        "job_description": "Optional description"
+    }
+    """
+    raw_payload = request.get_json(silent=True)
+    if not raw_payload:
+        logger.warning("Create job request with empty payload.")
+        return make_error_response("Request payload is missing or not valid JSON.", 400)
+
+    logger.info(f"Attempting to create job with payload: {raw_payload}")
+
+    try:
+        payload = CreateJobPayload(**raw_payload)
+    except ValidationError as e:
+        logger.warning(f"Invalid job creation payload: {e.errors()}")
+        return make_error_response(f"Invalid payload: {e.errors()}", 400)
+
+    full_job_name = f"ProjectCI/{payload.job_name}"
+    shell_command = ""
+    description = payload.job_description or f"MCP Created {payload.job_type} job: {payload.job_name}"
+
+    if payload.job_type == "calendar":
+        shell_command = f"cal {payload.month} {payload.year}"
+        description = payload.job_description or f"Calendar job for {payload.month}/{payload.year} (created via MCP)"
+    elif payload.job_type == "weather":
+        # Sanitize city input slightly for shell command (basic example)
+        safe_city = "".join(c if c.isalnum() or c in ['-', '_', ' '] else '' for c in payload.city).strip()
+        if not safe_city:
+            return make_error_response("Invalid city name provided for weather job.", 400)
+        shell_command = f"curl -s 'wttr.in/{safe_city}?format=3'" # format=3 for concise output
+        description = payload.job_description or f"Weather job for {safe_city} (created via MCP)"
+
+    job_config_xml = JOB_XML_CONFIG_TEMPLATE.format(shell_command=shell_command, description=description)
+
+    try:
+        @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
+        def _check_job_exists(name):
+            return jenkins_server.job_exists(name)
+
+        @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
+        def _create_jenkins_job_api(name, config):
+            jenkins_server.create_job(name, config)
+            # Verify creation by trying to get info (optional, but good check)
+            # jenkins_server.get_job_info(name)
+
+
+        if _check_job_exists(full_job_name):
+            logger.warning(f"Job '{full_job_name}' already exists. Creation aborted.")
+            return make_error_response(f"Job '{full_job_name}' already exists.", 409) # 409 Conflict
+
+        logger.info(f"Creating job '{full_job_name}' with XML config:\n{job_config_xml}")
+        _create_jenkins_job_api(full_job_name, job_config_xml)
+        
+        # Attempt to get job info to confirm creation and get URL
+        job_info_after_creation = jenkins_server.get_job_info(full_job_name)
+        job_url = job_info_after_creation.get('url', 'N/A')
+
+        logger.info(f"Successfully created job '{full_job_name}'. URL: {job_url}")
+        return jsonify({
+            "message": "Job created successfully",
+            "job_name": full_job_name,
+            "job_url": job_url,
+            "job_type": payload.job_type,
+            "details": {"shell_command": shell_command, "description": description}
+        }), 201 # Created
+    
+    except jenkins.JenkinsException as e:
+        logger.error(f"Jenkins API error during job creation for '{full_job_name}': {e}")
+        # More specific error for common issues
+        if "No such folder" in str(e) or "does not exist" in str(e):
+             logger.error(f"It seems the base folder 'ProjectCI' might not exist or there are permission issues.")
+             return make_error_response(f"Jenkins API error: Could not create job, possibly 'ProjectCI' folder missing or permission issues. Details: {str(e)}", 500)
+        return make_error_response(f"Jenkins API error: {str(e)}", 500)
+    except RetryError as e: # Catch RetryError from the helper functions
+        logger.error(f"Jenkins API error after retries during job creation for '{full_job_name}': {e}")
+        return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
+    except Exception as e:
+        logger.error(f"Unexpected error during job creation for '{full_job_name}': {e}", exc_info=True)
         return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
 
 
