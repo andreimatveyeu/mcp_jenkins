@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp_jenkins"
+version = "0.1.0"
+description = "A Jenkins MCP server"
+authors = [
+    { name = "Andrei Matveyeu", email = "andrei@ideabulbs.com" }
+]
+[project.entry-points.console_scripts]
+mcp_jenkins_server = "jenkins_mcp_server.run_server:main"
+mcp_jenkins_client = "jenkins_mcp_server.run_client:main"
+mcp_jenkins_run_docker_tests = "jenkins_mcp_server.run_docker_tests:main"
+mcp_jenkins_run_docker_build = "jenkins_mcp_server.run_docker_build:main"
+
+[tool.setuptools.packages]
+find = { where = ["src"] }

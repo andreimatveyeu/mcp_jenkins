@@ -1,0 +1,9 @@
+pylint
+requests
+google-generativeai
+Flask
+python-jenkins==1.8.2
+Flask-Limiter
+cachetools
+pydantic
+tenacity
