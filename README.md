@@ -77,6 +77,20 @@ A common workflow for development and testing is to first build the Docker image
     ```
 This sequence ensures that tests are performed against the latest build in a consistent Dockerized environment.
 
+## OpenWebUI Integration
+
+The file `open-webui/open_webui_interface.py` provides an example of how to integrate this MCP Jenkins server with an OpenWebUI instance.
+
+To use it:
+1. In your OpenWebUI interface, navigate to the section for adding or configuring tools.
+2. Create a new tool.
+3. Copy the entire content of the `open-webui/open_webui_interface.py` file and paste it into the tool configuration in OpenWebUI.
+4. **Important**: You will need to adjust the connection parameters within the pasted code, specifically:
+    - `MCP_JENKINS_SERVER_URL`: Set this environment variable in your OpenWebUI environment to the URL of your running MCP Jenkins server (e.g., `http://localhost:5000`). The script defaults to `http://localhost:5000` if the variable is not set.
+    - `MCP_API_KEY`: If your MCP Jenkins server is configured to require an API key, ensure this environment variable is set in your OpenWebUI environment. The script will print a warning if it's not found but will still attempt to make requests.
+
+Once configured, the tools defined in `open_webui_interface.py` (e.g., `list_jobs`, `trigger_build`, `get_build_status`) should become available for use within your OpenWebUI chat interface.
+
 ## License
 
 This project is licensed under the MIT License.
