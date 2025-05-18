@@ -161,16 +161,16 @@ def test_create_and_delete_job(server_process):
     assert MCP_API_KEY_FOR_TESTS, "MCP_API_KEY environment variable must be set for these tests"
 
     job_name = f"test-job-{int(time.time())}" # Unique job name
-    # Assuming the MCP server creates jobs in the 'ProjectCI' folder
-    full_job_name = f"ProjectCI/{job_name}"
+    # Job will be created at the root level
 
     # Payload for the MCP server's /job/create endpoint
     create_payload = {
         "job_name": job_name,
         "job_type": "calendar", # Using calendar type as an example
+        # No folder_name in payload for root creation
         "month": 1,
         "year": 2025,
-        "job_description": "Test job created by functional test"
+        "job_description": "Test job created by functional test at root"
     }
 
     headers = {"X-API-Key": MCP_API_KEY_FOR_TESTS, "Content-Type": "application/json"}
@@ -190,20 +190,20 @@ def test_create_and_delete_job(server_process):
 
         verify_exists = False
         # Check in the recursive job list from MCP server
-        list_jobs_url = f"{SERVER_URL}/jobs?recursive=true"
-        print(f"Verifying job '{full_job_name}' existence via MCP server at {list_jobs_url}")
+        list_jobs_url = f"{SERVER_URL}/jobs?recursive=true" # Use recursive to find it anywhere just in case
+        print(f"Verifying job '{job_name}' existence via MCP server at {list_jobs_url}")
         list_response = requests.get(list_jobs_url, headers=headers, timeout=10)
         list_response.raise_for_status()
         assert list_response.status_code == 200, f"Failed to list jobs via MCP server for verification. Status code: {list_response.status_code}. Response: {list_response.text}"
 
         jobs_data = list_response.json().get("jobs", [])
         for job in jobs_data:
-            if job.get("name") == full_job_name:
+            if job.get("name") == job_name: # Check for root level name
                 verify_exists = True
-                print(f"Job '{full_job_name}' verified to exist via MCP server listing.")
+                print(f"Job '{job_name}' verified to exist via MCP server listing.")
                 break
 
-        assert verify_exists, f"Job '{full_job_name}' not found in MCP server job listing after creation."
+        assert verify_exists, f"Job '{job_name}' not found in MCP server job listing after creation."
 
     except requests.RequestException as e:
         pytest.fail(f"Test failed during job creation or verification via MCP server: {e}")
@@ -212,14 +212,14 @@ def test_create_and_delete_job(server_process):
 
     finally:
         # Clean up: Delete the job via MCP server
-        delete_url = f"{SERVER_URL}/job/{full_job_name}/delete"
-        print(f"Attempting to delete job '{full_job_name}' via MCP server at {delete_url}")
+        delete_url = f"{SERVER_URL}/job/{job_name}/delete" # Use job_name for root deletion
+        print(f"Attempting to delete job '{job_name}' via MCP server at {delete_url}")
         try:
             delete_response = requests.post(delete_url, headers=headers, timeout=10)
             delete_response.raise_for_status()
-            assert delete_response.status_code == 200, f"Failed to delete job '{full_job_name}' via MCP server during cleanup. Status code: {delete_response.status_code}. Response: {delete_response.text}"
-            print(f"Job '{full_job_name}' deleted successfully via MCP server.")
+            assert delete_response.status_code == 200, f"Failed to delete job '{job_name}' via MCP server during cleanup. Status code: {delete_response.status_code}. Response: {delete_response.text}"
+            print(f"Job '{job_name}' deleted successfully via MCP server.")
         except requests.RequestException as e:
-            print(f"Warning: Failed to delete job '{full_job_name}' via MCP server during cleanup: {e}")
+            print(f"Warning: Failed to delete job '{job_name}' via MCP server during cleanup: {e}")
         except Exception as e:
             print(f"Warning: An unexpected error occurred during job deletion cleanup via MCP server: {e}")

@@ -140,6 +140,7 @@ class BuildJobPayload(BaseModel):
 class CreateJobPayload(BaseModel):
     job_name: str
     job_type: Literal["calendar", "weather"]
+    folder_name: Optional[str] = None # Added optional folder_name
     month: Optional[int] = None
     year: Optional[int] = None
     city: Optional[str] = None
@@ -151,6 +152,11 @@ class CreateJobPayload(BaseModel):
         month = values.get('month')
         year = values.get('year')
         city = values.get('city')
+        folder_name = values.get('folder_name') # Read folder_name
+
+        # Basic validation for folder_name if provided
+        if folder_name is not None and '/' in folder_name:
+             raise ValueError("Folder name cannot contain '/'. Use nested calls if needed.")
 
         if job_type == "calendar":
             if month is None or year is None:
@@ -781,12 +787,20 @@ def create_jenkins_job():
     try:
         payload = CreateJobPayload(**raw_payload)
     except ValidationError as e:
-        logger.warning(f"Invalid job creation payload: {e.errors()}")
         return make_error_response(f"Invalid payload: {e.errors()}", 400)
 
-    full_job_name = f"ProjectCI/{payload.job_name}"
+    # Construct full job name based on folder_name
+    if payload.folder_name:
+        # Ensure folder exists or handle creation if needed (beyond current scope)
+        # For now, assume folder exists or Jenkins API handles nested path creation
+        full_job_name = f"{payload.folder_name}/{payload.job_name}"
+        logger.info(f"Creating job '{payload.job_name}' in folder '{payload.folder_name}'. Full name: '{full_job_name}'")
+    else:
+        full_job_name = payload.job_name
+        logger.info(f"Creating job '{full_job_name}' at the root level.")
+
     shell_command = ""
-    description = payload.job_description or f"MCP Created {payload.job_type} job: {payload.job_name}"
+    description = payload.job_description or f"MCP Created {payload.job_type} job: {full_job_name}" # Update description to use full_job_name
 
     if payload.job_type == "calendar":
         shell_command = f"cal {payload.month} {payload.year}"
