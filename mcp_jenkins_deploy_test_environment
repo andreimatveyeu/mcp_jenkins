@@ -1,0 +1,265 @@
+#!/bin/sh
+set -e # Exit immediately if a command exits with a non-zero status.
+set -o pipefail # Causes a pipeline to return the exit status of the last command in the pipe that returned a non-zero return value.
+
+# Configuration
+COOKIE_JAR=$(mktemp)
+# Cleanup trap for the cookie jar
+trap 'rm -f "$COOKIE_JAR"' EXIT
+
+JENKINS_IMAGE="jenkins/jenkins:2.504.1-lts-alpine"
+JENKINS_CONTAINER_NAME="mcp-jenkins-test-env"
+JENKINS_PORT="6211"
+JENKINS_USER="admin"
+JENKINS_PASSWORD="test"
+JENKINS_URL="http://localhost:$JENKINS_PORT"
+OUTPUT_FILE="test_envs"
+TOKEN_NAME="testtoken"
+
+# Attempt to stop and remove the container if it exists
+echo "Attempting to stop and remove existing container '$JENKINS_CONTAINER_NAME' if it exists..."
+docker rm -f "$JENKINS_CONTAINER_NAME" > /dev/null 2>&1 || true
+echo "Ensured no conflicting container is running."
+
+echo "Starting Jenkins test environment deployment..."
+# ... (rest of your initial setup, docker checks, container stop/remove, pull, start - remains the same) ...
+echo "Pulling Jenkins image (if not already present)..."
+docker pull $JENKINS_IMAGE
+
+echo "Starting Jenkins container '$JENKINS_CONTAINER_NAME' on port $JENKINS_PORT..."
+docker run -d --name $JENKINS_CONTAINER_NAME \
+    -p $JENKINS_PORT:8080 \
+    -e JAVA_OPTS="-Djenkins.install.runSetupWizard=true" \
+    $JENKINS_IMAGE
+
+echo "Waiting for Jenkins to start at $JENKINS_URL (this may take a few minutes)..."
+MAX_RETRIES=90
+RETRY_COUNT=0
+until curl -sL --fail -w "%{http_code}" "$JENKINS_URL/login" -o /dev/null | grep -q "200"; do
+    RETRY_COUNT=$((RETRY_COUNT + 1))
+    if [ $RETRY_COUNT -ge $MAX_RETRIES ]; then
+        echo "Error: Jenkins did not start within the expected time ($((MAX_RETRIES * 5)) seconds)."
+        echo "Attempting to get logs from container '$JENKINS_CONTAINER_NAME':"
+        docker logs $JENKINS_CONTAINER_NAME || echo "Failed to get logs."
+        exit 1
+    fi
+    printf "Jenkins not ready yet (attempt %s/%s). Retrying in 5 seconds...\n" "$RETRY_COUNT" "$MAX_RETRIES"
+    sleep 5
+done
+echo "Jenkins is up and running!"
+
+echo "Allowing Jenkins an additional 20 seconds to initialize fully..."
+sleep 20
+
+echo "Waiting for initial admin password..."
+INITIAL_ADMIN_PASSWORD=""
+MAX_PASSWORD_RETRIES=60 # Wait up to 5 minutes (60 * 5 seconds)
+PASSWORD_RETRY_COUNT=0
+while [ -z "$INITIAL_ADMIN_PASSWORD" ] && [ $PASSWORD_RETRY_COUNT -lt $MAX_PASSWORD_RETRIES ]; do
+    PASSWORD_RETRY_COUNT=$((PASSWORD_RETRY_COUNT + 1))
+    echo "Attempting to retrieve initial admin password (attempt $PASSWORD_RETRY_COUNT/$MAX_PASSWORD_RETRIES)..."
+    # Use -n to avoid adding a newline to the output, which can interfere with length check
+    PASSWORD_OUTPUT=$(docker exec $JENKINS_CONTAINER_NAME cat /var/jenkins_home/secrets/initialAdminPassword 2>/dev/null | tr -d '\r')
+    PASSWORD_LENGTH=${#PASSWORD_OUTPUT}
+
+    if [ $PASSWORD_LENGTH -eq 32 ]; then
+        INITIAL_ADMIN_PASSWORD="$PASSWORD_OUTPUT"
+        echo "Initial admin password retrieved successfully."
+        break
+    else
+        echo "Password not found or incorrect length ($PASSWORD_LENGTH). Retrying in 5 seconds..."
+        sleep 5
+    fi
+done
+
+if [ -z "$INITIAL_ADMIN_PASSWORD" ]; then
+    echo "Error: Failed to retrieve initial admin password after $MAX_PASSWORD_RETRIES attempts."
+    docker logs $JENKINS_CONTAINER_NAME
+    exit 1
+fi
+
+echo "Fetching CSRF crumb..."
+CRUMB_URL="${JENKINS_URL}/crumbIssuer/api/json"
+echo "DEBUG: Crumb URL is [$CRUMB_URL]"
+echo "DEBUG: Cookie jar is [$COOKIE_JAR]"
+
+CRUMB_RESPONSE_DATA=$(curl -s -u "admin:${INITIAL_ADMIN_PASSWORD}" -c "$COOKIE_JAR" "${CRUMB_URL}" 2>&1)
+CRUMB_CURL_EXIT_STATUS=$?
+
+echo "DEBUG: Crumb curl command executed. Exit status: $CRUMB_CURL_EXIT_STATUS."
+echo "DEBUG: CRUMB_RESPONSE_DATA is [$CRUMB_RESPONSE_DATA]"
+
+# --- ADDED: Inspect cookie jar after crumb fetch ---
+echo "DEBUG: Contents of cookie jar '$COOKIE_JAR' *after* crumb fetch:"
+if [ -s "$COOKIE_JAR" ]; then # Check if file exists and is not empty
+    cat "$COOKIE_JAR"
+    echo # Newline for better formatting
+else
+    echo "Cookie jar is empty or does not exist."
+fi
+# --- END ADDED ---
+
+if [ $CRUMB_CURL_EXIT_STATUS -ne 0 ]; then
+    echo "Error: curl command for fetching crumb failed with exit status $CRUMB_CURL_EXIT_STATUS."
+    echo "Curl output/error for crumb: [$CRUMB_RESPONSE_DATA]"
+    docker logs $JENKINS_CONTAINER_NAME
+    exit 1
+fi
+
+if ! command -v jq &> /dev/null
+then
+    echo "Warning: jq could not be found. Attempting basic parsing for crumb (less robust)."
+    CRUMB_FIELD=$(echo "$CRUMB_RESPONSE_DATA" | grep -o '"crumb":"[^"]*"' | sed -n 's/.*"crumb":"\([^"]*\)".*/\1/p')
+    CRUMB_HEADER_FIELD=$(echo "$CRUMB_RESPONSE_DATA" | grep -o '"crumbRequestField":"[^"]*"' | sed -n 's/.*"crumbRequestField":"\([^"]*\)".*/\1/p')
+    if [ -z "$CRUMB_FIELD" ] || [ -z "$CRUMB_HEADER_FIELD" ]; then
+        echo "Error: Failed to parse crumb without jq."
+        echo "Crumb data received: [$CRUMB_RESPONSE_DATA]"
+        docker logs $JENKINS_CONTAINER_NAME
+        exit 1
+    fi
+else
+    if echo "$CRUMB_RESPONSE_DATA" | jq -e . > /dev/null 2>&1; then
+        echo "DEBUG: Crumb response is valid JSON."
+        CRUMB_FIELD=$(echo "$CRUMB_RESPONSE_DATA" | jq -r '.crumb' 2>/dev/null)
+        CRUMB_HEADER_FIELD=$(echo "$CRUMB_RESPONSE_DATA" | jq -r '.crumbRequestField' 2>/dev/null)
+        if [ "$CRUMB_FIELD" == "null" ] || [ -z "$CRUMB_FIELD" ] || [ "$CRUMB_HEADER_FIELD" == "null" ] || [ -z "$CRUMB_HEADER_FIELD" ]; then
+            echo "Error: Failed to extract crumb fields using jq, even if JSON was valid."
+            echo "Crumb data received: [$CRUMB_RESPONSE_DATA]"
+            echo "Parsed Crumb Field: '$CRUMB_FIELD', Parsed Header Field: '$CRUMB_HEADER_FIELD'"
+            docker logs $JENKINS_CONTAINER_NAME
+            exit 1
+        fi
+    else
+        echo "Error: Crumb response is not valid JSON or jq parsing failed."
+        echo "Crumb data received: [$CRUMB_RESPONSE_DATA]"
+        docker logs $JENKINS_CONTAINER_NAME
+        exit 1
+    fi
+fi
+echo "Crumb successfully obtained: Header=[$CRUMB_HEADER_FIELD], Crumb=[$CRUMB_FIELD]"
+
+echo "Generating API token for user '$JENKINS_USER' with token name '$TOKEN_NAME'..."
+MAX_API_RETRIES=4
+API_RETRY_COUNT=0
+API_TOKEN=""
+STATUS_OK=""
+TEMP_API_TOKEN=""
+TEMP_STATUS_OK=""
+
+echo "DEBUG: Entering token generation loop."
+while [ $API_RETRY_COUNT -lt $MAX_API_RETRIES ]; do
+    echo "DEBUG: Top of token generation loop, attempt $((API_RETRY_COUNT + 1))."
+
+    CRUMB_HEADER_ARG="${CRUMB_HEADER_FIELD}:${CRUMB_FIELD}"
+    TARGET_URL="${JENKINS_URL}/user/${JENKINS_USER}/descriptorByName/jenkins.security.ApiTokenProperty/generateNewToken?newTokenName=${TOKEN_NAME}"
+    # --- MODIFIED: Define a Referer URL ---
+    REFERER_URL="${JENKINS_URL}/user/${JENKINS_USER}/" # A plausible Referer for this action
+
+    echo "DEBUG: CRUMB_HEADER_ARG=[$CRUMB_HEADER_ARG]"
+    echo "DEBUG: TARGET_URL=[$TARGET_URL]"
+    # --- ADDED: Debug for Referer ---
+    echo "DEBUG: REFERER_URL=[$REFERER_URL]"
+    # --- ADDED: Inspect cookie jar before token generation call ---
+    echo "DEBUG: Contents of cookie jar '$COOKIE_JAR' *before* token generation attempt:"
+    if [ -s "$COOKIE_JAR" ]; then # Check if file exists and is not empty
+        cat "$COOKIE_JAR"
+        echo # Newline
+    else
+        echo "Cookie jar is empty or does not exist."
+    fi
+
+    # --- MODIFIED: Added -H "Referer: ${REFERER_URL}" ---
+    TOKEN_RESPONSE_DATA=$(curl -s -X POST \
+        -u "admin:${INITIAL_ADMIN_PASSWORD}" \
+        -b "$COOKIE_JAR" \
+        -H "${CRUMB_HEADER_ARG}" \
+        -H "Referer: ${REFERER_URL}" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+    "${TARGET_URL}" 2>&1)
+
+    CURL_EXIT_STATUS=$?
+
+    echo "DEBUG: curl command executed. Exit status: $CURL_EXIT_STATUS."
+    echo "DEBUG: TOKEN_RESPONSE_DATA is [$TOKEN_RESPONSE_DATA]"
+
+    if [ $CURL_EXIT_STATUS -ne 0 ]; then
+        echo "Warning: curl command for token generation failed with exit status $CURL_EXIT_STATUS."
+        TOKEN_RESPONSE=""
+    else
+        TOKEN_RESPONSE=$TOKEN_RESPONSE_DATA
+    fi
+
+    if ! command -v jq &> /dev/null
+    then
+        TEMP_API_TOKEN=$(echo "$TOKEN_RESPONSE" | grep -o '"tokenValue":"[^"]*"' | sed -n 's/.*"tokenValue":"\([^"]*\)".*/\1/p')
+        if [ -n "$TEMP_API_TOKEN" ]; then
+            API_TOKEN=$TEMP_API_TOKEN
+            echo "API Token parsed successfully (without jq)."
+            break
+        fi
+    else
+        if echo "$TOKEN_RESPONSE" | jq -e . > /dev/null 2>&1; then
+            TEMP_API_TOKEN=$(echo "$TOKEN_RESPONSE" | jq -r '.data.tokenValue' 2>/dev/null || true)
+            TEMP_STATUS_OK=$(echo "$TOKEN_RESPONSE" | jq -r '.status' 2>/dev/null || true)
+            if [ "$TEMP_STATUS_OK" = "ok" ] && [ "$TEMP_API_TOKEN" != "null" ] && [ -n "$TEMP_API_TOKEN" ]; then
+                API_TOKEN=$TEMP_API_TOKEN
+                STATUS_OK=$TEMP_STATUS_OK
+                echo "API Token generated and parsed successfully (with jq)."
+                break
+            fi
+        else
+            echo "Warning: Token response was not valid JSON. Will retry if attempts remain."
+            # TOKEN_RESPONSE already contains the non-JSON data for logging below
+            TEMP_API_TOKEN="" # Ensure these are empty if not parsed
+            TEMP_STATUS_OK=""
+        fi
+    fi
+
+    API_RETRY_COUNT=$((API_RETRY_COUNT + 1))
+    if [ $API_RETRY_COUNT -ge $MAX_API_RETRIES ]; then
+        echo "Error: Failed to generate or parse API token after $MAX_API_RETRIES attempts."
+        echo "Last token generation response: [$TOKEN_RESPONSE]"
+        echo "Attempted direct curl with URL: [$TARGET_URL], Header: [$CRUMB_HEADER_ARG], Referer: [$REFERER_URL]"
+        if command -v jq &> /dev/null; then
+            echo "Last Parsed API Token (jq): '$TEMP_API_TOKEN', Last Status (jq): '$TEMP_STATUS_OK'"
+        else
+            echo "Last Parsed API Token (grep): '$TEMP_API_TOKEN'"
+        fi
+        docker logs $JENKINS_CONTAINER_NAME
+        exit 1
+    fi
+    printf "API token generation failed or token not found (attempt %s/%s). Retrying in 5 seconds...\n" "$API_RETRY_COUNT" "$MAX_API_RETRIES"
+    printf "Token response was:\n%s\n" "$TOKEN_RESPONSE"
+    sleep 5
+done
+
+if [ -z "$API_TOKEN" ]; then
+    echo "Critical Error: API_TOKEN is empty after retry loop. This should not happen."
+    exit 1
+fi
+
+echo "API Token obtained successfully."
+
+# ... (rest of your script for saving credentials and cleanup - remains the same) ...
+echo "Saving credentials to '$OUTPUT_FILE'..."
+mkdir -p "$(dirname "$OUTPUT_FILE")"
+{
+    echo "# Jenkins Test Environment Credentials"
+    echo "# Generated by script"
+    echo "export JENKINS_URL=\"$JENKINS_URL\""
+    echo "export JENKINS_USER=\"$JENKINS_USER\""
+    echo "export JENKINS_PASSWORD=\"$INITIAL_ADMIN_PASSWORD\"" # Saving the initial admin password
+    echo "export JENKINS_API_TOKEN=\"$API_TOKEN\""
+} > "$OUTPUT_FILE"
+
+echo "--------------------------------------------------"
+echo "Jenkins deployment and setup complete!"
+echo "Credentials saved in: $(realpath "$OUTPUT_FILE")"
+echo "You can access Jenkins at: $JENKINS_URL"
+echo "  Username: $JENKINS_USER"
+echo "  Password: $JENKINS_PASSWORD"
+echo ""
+echo "To stop the Jenkins container: docker stop $JENKINS_CONTAINER_NAME"
+echo "To remove the Jenkins container (after stopping): docker rm $JENKINS_CONTAINER_NAME"
+echo "To view Jenkins logs: docker logs $JENKINS_CONTAINER_NAME"
+echo "--------------------------------------------------"
