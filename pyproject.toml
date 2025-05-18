@@ -7,7 +7,7 @@ name = "mcp_jenkins"
 version = "0.1.0"
 description = "A Jenkins MCP server"
 authors = [
-    { name = "Your Name", email = "your.email@example.com" }
+    { name = "Andrei Matveyeu", email = "andrei@ideabulbs.com" }
 ]
 [project.entry-points.console_scripts]
 mcp_jenkins_server = "jenkins_mcp_server.run_server:main"
