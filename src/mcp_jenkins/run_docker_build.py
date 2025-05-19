@@ -4,8 +4,8 @@ import os
 
 def main():
     # Construct the path to the script relative to this file's location
-    # This script is in src/jenkins_mcp_server/
-    # The target script is in src/jenkins_mcp_server/docker/build
+    # This script is in src/mcp_jenkins/
+    # The target script is in src/mcp_jenkins/docker/build
     script_dir = os.path.dirname(os.path.abspath(__file__))
     script_path = os.path.join(script_dir, "docker", "build")
 

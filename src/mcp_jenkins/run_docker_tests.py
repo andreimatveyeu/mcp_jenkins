@@ -6,8 +6,8 @@ os.environ["MCP_API_KEY"] = "2"
 
 def main():
     # Construct the path to the script relative to this file's location
-    # This script is in src/jenkins_mcp_server/
-    # The target script is in src/jenkins_mcp_server/docker/run.server.tests
+    # This script is in src/mcp_jenkins/
+    # The target script is in src/mcp_jenkins/docker/run.server.tests
     script_dir = os.path.dirname(os.path.abspath(__file__))
     script_path = os.path.join(script_dir, "docker", "run.server.tests")
 

@@ -42,12 +42,12 @@ if WRITE_LOG_TO_FILE_FOR_TESTS:
     try:
         # Ensure the log file is in the same directory as main.py
         # The path 'TEST_LOG_FILE_NAME' will be relative to the CWD of the server process.
-        # If server is run from src/jenkins_mcp_server/, this will place it correctly.
-        # Inside Docker, CWD is usually /app, and main.py is at /app/src/jenkins_mcp_server/main.py
+        # If server is run from src/mcp_jenkins/, this will place it correctly.
+        # Inside Docker, CWD is usually /app, and main.py is at /app/src/mcp_jenkins/main.py
         # So, we need to be careful about the path.
         # Let's assume CWD is /app (project root in container)
-        # and main.py is at src/jenkins_mcp_server/main.py
-        # So log file should be src/jenkins_mcp_server/server_test.log
+        # and main.py is at src/mcp_jenkins/main.py
+        # So log file should be src/mcp_jenkins/server_test.log
         
         # Determine the directory of the current script (main.py)
         script_dir = os.path.dirname(os.path.abspath(__file__))

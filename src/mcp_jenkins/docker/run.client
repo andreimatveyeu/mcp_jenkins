@@ -7,4 +7,4 @@ docker run --rm --name=mcp_jenkins_client --network=host -it \
   -e GOOGLE_AISTUDIO_API_KEY=${GOOGLE_AISTUDIO_API_KEY} \
   -e MCP_API_KEY=${MCP_API_KEY} \
   --entrypoint /usr/local/bin/python \
-  jenkins_mcp_server /app/src/jenkins_mcp_server/chat_interface.py "$@"
+  mcp_jenkins /app/src/mcp_jenkins/client.py "$@"
