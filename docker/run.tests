@@ -2,10 +2,9 @@
 set -eo pipefail # Exit on error, treat unset variables as an error, and propagate pipeline errors
 
 # Determine the project root directory on the host.
-# This script is expected to be in .../src/mcp_jenkins/docker/run.server.tests
-# So, one level up from the script's directory is .../src/mcp_jenkins/
-SCRIPT_DIR=$(dirname "$(realpath "$0")")
-PROJECT_ROOT_ON_HOST=$(realpath "${SCRIPT_DIR}/..") # This should be src/mcp_jenkins
+# This script is expected to be in the top-level 'docker' directory.
+# The project root is the directory containing this 'docker' directory.
+PROJECT_ROOT_ON_HOST=$(pwd)
 
 IMAGE_NAME="jenkins_mcp_server:latest" # Standard image name, ensure 'docker/build' creates this
 CONTAINER_APP_DIR="/app" # Standard working directory in the container, as per typical Dockerfile setup
@@ -29,7 +28,7 @@ fi
 # Check if the image exists.
 if ! docker image inspect "$IMAGE_NAME" > /dev/null 2>&1; then
     echo "Error: Docker image '$IMAGE_NAME' not found."
-    echo "Please build the image first. You might need to run a script like '${PROJECT_ROOT_ON_HOST}/docker/build'."
+    echo "Please build the image first. You might need to run a script like 'docker/build'."
     echo "Exiting."
     exit 1
 fi
@@ -53,9 +52,9 @@ echo "Running functional tests using pytest..."
 #   -s: Show print statements (stdout) from tests. This is helpful for debugging.
 docker run -t --rm \
     --name mcp_jenkins_tests \
-    -v "${PROJECT_ROOT_ON_HOST}:${CONTAINER_APP_DIR}/src/mcp_jenkins" \
-    -v "$(realpath "${SCRIPT_DIR}/../../../tests"):${CONTAINER_APP_DIR}/tests" \
-    -v "$(realpath "${PROJECT_ROOT_ON_HOST}/../test_envs"):${CONTAINER_APP_DIR}/test_envs" \
+    -v "$(pwd)/src/mcp_jenkins:${CONTAINER_APP_DIR}/src/mcp_jenkins" \
+    -v "$(pwd)/tests:${CONTAINER_APP_DIR}/tests" \
+    -v "$(pwd)/test_envs:${CONTAINER_APP_DIR}/test_envs" \
     -e "PYTHONUNBUFFERED=1" \
     -e "SERVER_PORT=${SERVER_PORT_FOR_TESTS}" \
     -e "PYTHONPATH=${CONTAINER_APP_DIR}/src:${CONTAINER_APP_DIR}/tests" \
@@ -66,7 +65,7 @@ docker run -t --rm \
     -e LOG_LEVEL=${LOG_LEVEL:-INFO} \
     -e DEBUG_MODE=${DEBUG_MODE:-False} \
     -e WRITE_LOG_TO_FILE_FOR_TESTS=true \
-    --network host \
+    --network=host \
     --entrypoint pytest \
     "$IMAGE_NAME" \
     "${TEST_TARGET_IN_CONTAINER}" -v -s

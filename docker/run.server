@@ -1,0 +1,50 @@
+#!/bin/sh
+set -eo pipefail
+
+IMAGE_NAME="mcp_jenkins" # The image name defined in docker/build
+CONTAINER_NAME="mcp-server-for-jenkins"
+SERVER_PORT="8000"
+
+echo "--- MCP Jenkins Server Runner ---"
+echo "Docker Image: ${IMAGE_NAME}"
+echo "Container Name: ${CONTAINER_NAME}"
+echo "Server Port: ${SERVER_PORT}"
+echo "---------------------------------"
+
+# Check if Docker is running
+if ! docker info > /dev/null 2>&1; then
+    echo "Error: Docker does not seem to be running. Please start Docker and try again."
+    exit 1
+fi
+
+# Check if the image exists.
+if ! docker image inspect "$IMAGE_NAME" > /dev/null 2>&1; then
+    echo "Error: Docker image '$IMAGE_NAME' not found."
+    echo "Please build the image first. You might need to run 'docker/build'."
+    echo "Exiting."
+    exit 1
+fi
+
+# Stop and remove any existing container with the same name
+echo "Stopping and removing existing container '${CONTAINER_NAME}' if it exists..."
+docker stop "${CONTAINER_NAME}" > /dev/null 2>&1 || true
+docker rm "${CONTAINER_NAME}" > /dev/null 2>&1 || true
+echo "Ensured no conflicting container is running."
+
+echo "Running MCP Jenkins server in Docker..."
+docker run -d \
+    --name "${CONTAINER_NAME}" \
+    --network=host \
+    -p "${SERVER_PORT}:8000" \
+    -e "JENKINS_URL=${JENKINS_URL}" \
+    -e "JENKINS_USER=${JENKINS_USER}" \
+    -e "JENKINS_API_TOKEN=${JENKINS_API_TOKEN}" \
+    -e "MCP_API_KEY=${MCP_API_KEY}" \
+    -e "LOG_LEVEL=${LOG_LEVEL:-INFO}" \
+    -e "DEBUG_MODE=${DEBUG_MODE:-False}" \
+    "${IMAGE_NAME}"
+
+echo "MCP Jenkins server container '${CONTAINER_NAME}' started on port ${SERVER_PORT}."
+echo "You can access it at http://localhost:${SERVER_PORT}"
+echo "To stop the server: docker stop ${CONTAINER_NAME}"
+echo "To view logs: docker logs ${CONTAINER_NAME}"

@@ -12,9 +12,6 @@ authors = [
 [project.entry-points.console_scripts]
 mcp_jenkins_server = "mcp_jenkins.run_server:main"
 mcp_jenkins_client = "mcp_jenkins.run_client:main"
-mcp_jenkins_run_docker_tests = "mcp_jenkins.run_docker_tests:main"
-mcp_jenkins_run_docker_build = "mcp_jenkins.run_docker_build:main"
-mcp_jenkins_deploy_test_environment = "mcp_jenkins.run_deploy_test_environment:main"
 
 [tool.setuptools.packages]
 find = { where = ["src"] }
