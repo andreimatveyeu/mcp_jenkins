@@ -65,9 +65,20 @@ if WRITE_LOG_TO_FILE_FOR_TESTS:
 
 
 # --- Input Validation ---
-if not all([JENKINS_URL, JENKINS_USER, JENKINS_API_TOKEN]):
-    logger.critical("Jenkins credentials (JENKINS_URL, JENKINS_USER, JENKINS_API_TOKEN) not found in environment variables.")
-    raise ValueError("Jenkins credentials not found in environment variables.")
+if not JENKINS_URL:
+    logger.critical("JENKINS_URL not found in environment variables.")
+    raise ValueError("JENKINS_URL not found in environment variables.")
+
+# Check for JENKINS_USER and JENKINS_API_TOKEN consistency
+if (JENKINS_USER and not JENKINS_API_TOKEN) or (not JENKINS_USER and JENKINS_API_TOKEN):
+    logger.critical("JENKINS_USER and JENKINS_API_TOKEN must both be set or both be unset.")
+    raise ValueError("JENKINS_USER and JENKINS_API_TOKEN must both be set or both be unset.")
+
+if JENKINS_USER and JENKINS_API_TOKEN:
+    logger.info("JENKINS_USER and JENKINS_API_TOKEN are set for authentication.")
+else:
+    logger.info("JENKINS_USER and JENKINS_API_TOKEN are not set. Jenkins connection will be attempted without authentication.")
+
 
 if not MCP_API_KEY and not DEBUG_MODE:
     logger.critical("MCP_API_KEY is not set and DEBUG_MODE is false. Server will not start in secure mode without an API key.")
@@ -85,17 +96,23 @@ else: # MCP_API_KEY is set and DEBUG_MODE is false
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5))
 def connect_to_jenkins():
     logger.info(f"Attempting to connect to Jenkins server at {JENKINS_URL}...")
-    server = jenkins.Jenkins(JENKINS_URL, username=JENKINS_USER, password=JENKINS_API_TOKEN, timeout=20) # Increased timeout
-    server.get_whoami() # Test connection
-    return server
+    timeout = 20
+    if JENKINS_USER and JENKINS_API_TOKEN:
+        server = jenkins.Jenkins(JENKINS_URL, username=JENKINS_USER, password=JENKINS_API_TOKEN, timeout=timeout)
+    else:
+        server = jenkins.Jenkins(JENKINS_URL, timeout=timeout)
+    try:
+        server.get_whoami() # Test connection
+        logger.info(f"Successfully connected to Jenkins server at {JENKINS_URL}")
+        return server
+    except jenkins.JenkinsException as e:
+        status_code = getattr(e, 'status_code', 'N/A')
+        response_body = getattr(e, 'response_body', 'N/A')
+        logger.critical(f"Failed to connect to Jenkins: {e}. Status Code: {status_code}, Response Body: {response_body}")
+        raise # Re-raise to prevent app from starting if Jenkins connection fails initially
 
 try:
     jenkins_server = connect_to_jenkins()
-    jenkins_server.get_whoami() # Test connection
-    logger.info(f"Successfully connected to Jenkins server at {JENKINS_URL}")
-except jenkins.JenkinsException as e:
-    logger.critical(f"Failed to connect to Jenkins: {e}")
-    raise  # Re-raise to prevent app from starting if Jenkins connection fails initially
 except Exception as e:
     logger.critical(f"An unexpected error occurred during Jenkins initialization: {e}")
     raise
