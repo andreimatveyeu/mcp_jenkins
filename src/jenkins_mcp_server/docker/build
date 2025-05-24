@@ -1,2 +1,0 @@
-#!/bin/sh
-docker build --network=host -f src/jenkins_mcp_server/docker/Dockerfile -t jenkins_mcp_server .

@@ -59,7 +59,7 @@ def get_llm_instruction(query, model):
         functions_schema = inp.read()
     prompt = functions_schema.format(query=query, job_names_list=job_names_for_prompt)
 
-    if model == "gemini-2.0-flash-001":
+    if "gemini" in model:
         import google.generativeai as genai
         GOOGLE_AISTUDIO_API_KEY = os.environ.get("GOOGLE_AISTUDIO_API_KEY")
         if not GOOGLE_AISTUDIO_API_KEY:
@@ -290,8 +290,8 @@ def execute_instruction(instruction):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Chat with Jenkins MCP server")
     parser.add_argument("query", help="The query to send to the MCP server")
-    parser.add_argument("--model", default="deepseek-coder:6.7b-instruct", help="The model to use (e.g., deepseek-coder:6.7b-instruct, gemini-2.0-flash-001). For Ollama, use a model that supports JSON mode well.")
-    # Note: For gemini-2.0-flash-001, ensure GOOGLE_AISTUDIO_API_KEY is set.
+    parser.add_argument("--model", default="gemini-2.5-flash-preview-04-17", help="The model to use (e.g., deepseek-coder:6.7b-instruct, gemini-2.5-flash-preview-04-17). For Ollama, use a model that supports JSON mode well.")
+    # Note: For gemini-2.5-flash-preview-04-17, ensure GOOGLE_AISTUDIO_API_KEY is set.
     # For Ollama models, ensure OLLAMA_URL is set.
     args = parser.parse_args()
 

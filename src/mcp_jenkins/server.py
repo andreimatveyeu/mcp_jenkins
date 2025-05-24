@@ -42,12 +42,12 @@ if WRITE_LOG_TO_FILE_FOR_TESTS:
     try:
         # Ensure the log file is in the same directory as main.py
         # The path 'TEST_LOG_FILE_NAME' will be relative to the CWD of the server process.
-        # If server is run from src/jenkins_mcp_server/, this will place it correctly.
-        # Inside Docker, CWD is usually /app, and main.py is at /app/src/jenkins_mcp_server/main.py
+        # If server is run from src/mcp_jenkins/, this will place it correctly.
+        # Inside Docker, CWD is usually /app, and main.py is at /app/src/mcp_jenkins/main.py
         # So, we need to be careful about the path.
         # Let's assume CWD is /app (project root in container)
-        # and main.py is at src/jenkins_mcp_server/main.py
-        # So log file should be src/jenkins_mcp_server/server_test.log
+        # and main.py is at src/mcp_jenkins/main.py
+        # So log file should be src/mcp_jenkins/server_test.log
         
         # Determine the directory of the current script (main.py)
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -65,9 +65,20 @@ if WRITE_LOG_TO_FILE_FOR_TESTS:
 
 
 # --- Input Validation ---
-if not all([JENKINS_URL, JENKINS_USER, JENKINS_API_TOKEN]):
-    logger.critical("Jenkins credentials (JENKINS_URL, JENKINS_USER, JENKINS_API_TOKEN) not found in environment variables.")
-    raise ValueError("Jenkins credentials not found in environment variables.")
+if not JENKINS_URL:
+    logger.critical("JENKINS_URL not found in environment variables.")
+    raise ValueError("JENKINS_URL not found in environment variables.")
+
+# Check for JENKINS_USER and JENKINS_API_TOKEN consistency
+if (JENKINS_USER and not JENKINS_API_TOKEN) or (not JENKINS_USER and JENKINS_API_TOKEN):
+    logger.critical("JENKINS_USER and JENKINS_API_TOKEN must both be set or both be unset.")
+    raise ValueError("JENKINS_USER and JENKINS_API_TOKEN must both be set or both be unset.")
+
+if JENKINS_USER and JENKINS_API_TOKEN:
+    logger.info("JENKINS_USER and JENKINS_API_TOKEN are set for authentication.")
+else:
+    logger.info("JENKINS_USER and JENKINS_API_TOKEN are not set. Jenkins connection will be attempted without authentication.")
+
 
 if not MCP_API_KEY and not DEBUG_MODE:
     logger.critical("MCP_API_KEY is not set and DEBUG_MODE is false. Server will not start in secure mode without an API key.")
@@ -85,17 +96,32 @@ else: # MCP_API_KEY is set and DEBUG_MODE is false
 @retry(wait=wait_exponential(multiplier=1, min=4, max=10), stop=stop_after_attempt(5))
 def connect_to_jenkins():
     logger.info(f"Attempting to connect to Jenkins server at {JENKINS_URL}...")
-    server = jenkins.Jenkins(JENKINS_URL, username=JENKINS_USER, password=JENKINS_API_TOKEN, timeout=20) # Increased timeout
-    server.get_whoami() # Test connection
-    return server
+    timeout = 20
+    if JENKINS_USER and JENKINS_API_TOKEN:
+        server = jenkins.Jenkins(JENKINS_URL, username=JENKINS_USER, password=JENKINS_API_TOKEN, timeout=timeout)
+    else:
+        server = jenkins.Jenkins(JENKINS_URL, timeout=timeout)
+    try:
+        if JENKINS_USER and JENKINS_API_TOKEN:
+            server.get_whoami() # Test connection with auth
+            logger.info(f"Successfully connected to Jenkins server (authenticated) at {JENKINS_URL}")
+        else:
+            # Use get_version() for anonymous connection test, as it's generally more robust
+            version = server.get_version()
+            logger.info(f"Successfully connected to Jenkins server (anonymously, version: {version}) at {JENKINS_URL}")
+        return server
+    except jenkins.JenkinsException as e:
+        status_code = getattr(e, 'status_code', 'N/A')
+        response_body = getattr(e, 'response_body', 'N/A')
+        # Ensure response_body is logged, truncated if too long
+        log_response_body = response_body
+        if isinstance(response_body, str) and len(response_body) > 500: # Truncate long HTML responses
+            log_response_body = response_body[:500] + "... (truncated)"
+        logger.critical(f"Failed to connect to Jenkins: {e}. Status Code: {status_code}, Response Body: {log_response_body}")
+        raise # Re-raise to prevent app from starting if Jenkins connection fails initially
 
 try:
     jenkins_server = connect_to_jenkins()
-    jenkins_server.get_whoami() # Test connection
-    logger.info(f"Successfully connected to Jenkins server at {JENKINS_URL}")
-except jenkins.JenkinsException as e:
-    logger.critical(f"Failed to connect to Jenkins: {e}")
-    raise  # Re-raise to prevent app from starting if Jenkins connection fails initially
 except Exception as e:
     logger.critical(f"An unexpected error occurred during Jenkins initialization: {e}")
     raise
@@ -140,6 +166,7 @@ class BuildJobPayload(BaseModel):
 class CreateJobPayload(BaseModel):
     job_name: str
     job_type: Literal["calendar", "weather"]
+    folder_name: Optional[str] = None # Added optional folder_name
     month: Optional[int] = None
     year: Optional[int] = None
     city: Optional[str] = None
@@ -151,6 +178,11 @@ class CreateJobPayload(BaseModel):
         month = values.get('month')
         year = values.get('year')
         city = values.get('city')
+        folder_name = values.get('folder_name') # Read folder_name
+
+        # Basic validation for folder_name if provided
+        if folder_name is not None and '/' in folder_name:
+             raise ValueError("Folder name cannot contain '/'. Use nested calls if needed.")
 
         if job_type == "calendar":
             if month is None or year is None:
@@ -183,7 +215,13 @@ def health_check():
     """Provides a health check for the service and Jenkins connection."""
     try:
         # Use a direct, non-retrying call for health check to get current status
-        jenkins_server.get_whoami() # Test connection without retry for health status
+        # Align with the connection logic: get_whoami for auth, get_version for anonymous
+        if JENKINS_USER and JENKINS_API_TOKEN:
+            jenkins_server.get_whoami() # Test connection with auth
+            logger.debug("Health check: Jenkins connection test (get_whoami) successful.")
+        else:
+            version = jenkins_server.get_version() # Test connection anonymously
+            logger.debug(f"Health check: Jenkins connection test (get_version) successful. Version: {version}")
         jenkins_status = "connected"
         status_code = 200
     except jenkins.JenkinsException as e:
@@ -285,14 +323,19 @@ def list_jobs():
     folder_name = request.args.get('folder_name')
     recursive_str = request.args.get('recursive', 'false').lower()
     recursive = recursive_str == 'true'
-    logger.debug(f"list_jobs: ENTER - folder_name='{folder_name}', recursive_str='{recursive_str}' -> recursive={recursive}")
+    cache_buster = request.args.get('_cb') # Check for cache-busting parameter
+    logger.debug(f"list_jobs: ENTER - folder_name='{folder_name}', recursive_str='{recursive_str}' -> recursive={recursive}, _cb='{cache_buster}'")
 
     cache_key = f"list_jobs::{folder_name}::recursive={recursive}"
-    cached_result = job_list_cache.get(cache_key)
-    if cached_result:
-        logger.info(f"Returning cached job list for key: {cache_key}")
-        logger.debug(f"list_jobs: EXIT (from cache)")
-        return jsonify({"jobs": cached_result, "source": "cache"})
+    
+    if not cache_buster: # Only attempt to use cache if _cb is NOT present
+        cached_result = job_list_cache.get(cache_key)
+        if cached_result:
+            logger.info(f"Returning cached job list for key: {cache_key}")
+            logger.debug(f"list_jobs: EXIT (from cache)")
+            return jsonify({"jobs": cached_result, "source": "cache"})
+    else:
+        logger.info(f"Cache buster ('_cb={cache_buster}') present, bypassing cache for key: {cache_key}")
 
     try:
         @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
@@ -781,12 +824,20 @@ def create_jenkins_job():
     try:
         payload = CreateJobPayload(**raw_payload)
     except ValidationError as e:
-        logger.warning(f"Invalid job creation payload: {e.errors()}")
         return make_error_response(f"Invalid payload: {e.errors()}", 400)
 
-    full_job_name = f"ProjectCI/{payload.job_name}"
+    # Construct full job name based on folder_name
+    if payload.folder_name:
+        # Ensure folder exists or handle creation if needed (beyond current scope)
+        # For now, assume folder exists or Jenkins API handles nested path creation
+        full_job_name = f"{payload.folder_name}/{payload.job_name}"
+        logger.info(f"Creating job '{payload.job_name}' in folder '{payload.folder_name}'. Full name: '{full_job_name}'")
+    else:
+        full_job_name = payload.job_name
+        logger.info(f"Creating job '{full_job_name}' at the root level.")
+
     shell_command = ""
-    description = payload.job_description or f"MCP Created {payload.job_type} job: {payload.job_name}"
+    description = payload.job_description or f"MCP Created {payload.job_type} job: {full_job_name}" # Update description to use full_job_name
 
     if payload.job_type == "calendar":
         shell_command = f"cal {payload.month} {payload.year}"
@@ -845,6 +896,101 @@ def create_jenkins_job():
         return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
     except Exception as e:
         logger.error(f"Unexpected error during job creation for '{full_job_name}': {e}", exc_info=True)
+        return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
+
+@app.route('/folder/create', methods=['POST'])
+@require_api_key
+@limiter.limit("20 per hour") # Limit folder creation rate
+def create_jenkins_folder():
+    """
+    Creates a new Jenkins folder.
+    Payload:
+    {
+        "folder_name": "MyNewFolder"
+    }
+    """
+    raw_payload = request.get_json(silent=True)
+    if not raw_payload or 'folder_name' not in raw_payload:
+        logger.warning("Create folder request with missing payload or folder_name.")
+        return make_error_response("Request payload is missing or 'folder_name' is not provided.", 400)
+
+    folder_name = raw_payload['folder_name']
+    logger.info(f"Attempting to create folder: {folder_name}")
+
+    try:
+        @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
+        def _check_folder_exists(name):
+            # jenkins_server.job_exists works for folders too
+            return jenkins_server.job_exists(name)
+
+        @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
+        def _create_jenkins_folder_api(name):
+            # Use the create_folder method
+            jenkins_server.create_folder(name)
+
+        if _check_folder_exists(folder_name):
+            logger.warning(f"Folder '{folder_name}' already exists. Creation aborted.")
+            return make_error_response(f"Folder '{folder_name}' already exists.", 409) # 409 Conflict
+
+        logger.info(f"Creating folder '{folder_name}'")
+        _create_jenkins_folder_api(folder_name)
+
+        # Attempt to get folder info to confirm creation and get URL
+        folder_info_after_creation = jenkins_server.get_job_info(folder_name) # get_job_info works for folders
+        folder_url = folder_info_after_creation.get('url', 'N/A')
+
+        logger.info(f"Successfully created folder '{folder_name}'. URL: {folder_url}")
+        return jsonify({
+            "message": "Folder created successfully",
+            "folder_name": folder_name,
+            "folder_url": folder_url
+        }), 201 # Created
+
+    except jenkins.JenkinsException as e:
+        logger.error(f"Jenkins API error during folder creation for '{folder_name}': {e}")
+        return make_error_response(f"Jenkins API error: {str(e)}", 500)
+    except RetryError as e:
+        logger.error(f"Jenkins API error after retries during folder creation for '{folder_name}': {e}")
+        return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
+    except Exception as e:
+        logger.error(f"Unexpected error during folder creation for '{folder_name}': {e}", exc_info=True)
+        return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
+
+
+@app.route('/job/<path:job_path>/delete', methods=['POST'])
+@require_api_key
+@limiter.limit("20 per hour") # Limit job/folder deletion rate
+def delete_jenkins_item(job_path): # Renamed to be more generic for jobs and folders
+    """
+    Deletes a Jenkins job.
+    job_path can include folders, e.g., 'MyJob' or 'MyFolder/MyJob'.
+    """
+    if not job_path:
+        logger.warning("Delete job request with missing job_path.")
+        return make_error_response("Missing job_path parameter", 400)
+
+    logger.info(f"Attempting to delete job: {job_path}")
+
+    try:
+        @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
+        def _delete_jenkins_job_api(name):
+            jenkins_server.delete_job(name)
+
+        _delete_jenkins_job_api(job_path)
+        logger.info(f"Job '{job_path}' deleted successfully.")
+        return jsonify({"message": f"Job '{job_path}' deleted successfully."}), 200
+
+    except jenkins.NotFoundException:
+        logger.warning(f"Job '{job_path}' not found for deletion.")
+        return make_error_response(f"Job '{job_path}' not found.", 404)
+    except RetryError as e:
+        logger.error(f"Jenkins API error after retries during job deletion for '{job_path}': {e}")
+        return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
+    except jenkins.JenkinsException as e:
+        logger.error(f"Jenkins API error during job deletion for '{job_path}': {e}")
+        return make_error_response(f"Jenkins API error: {str(e)}", 500)
+    except Exception as e:
+        logger.error(f"Unexpected error during job deletion for '{job_path}': {e}", exc_info=True)
         return make_error_response(f"An unexpected error occurred: {str(e)}", 500)
 
 

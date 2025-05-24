@@ -2,15 +2,14 @@
 set -eo pipefail # Exit on error, treat unset variables as an error, and propagate pipeline errors
 
 # Determine the project root directory on the host.
-# This script is expected to be in .../src/jenkins_mcp_server/docker/run.server.tests
-# So, one level up from the script's directory is .../src/jenkins_mcp_server/
-SCRIPT_DIR=$(dirname "$(realpath "$0")")
-PROJECT_ROOT_ON_HOST=$(realpath "${SCRIPT_DIR}/..") # This should be src/jenkins_mcp_server
+# This script is expected to be in the top-level 'docker' directory.
+# The project root is the directory containing this 'docker' directory.
+PROJECT_ROOT_ON_HOST=$(pwd)
 
 IMAGE_NAME="jenkins_mcp_server:latest" # Standard image name, ensure 'docker/build' creates this
 CONTAINER_APP_DIR="/app" # Standard working directory in the container, as per typical Dockerfile setup
 # Path to tests inside the container, reflecting the project structure within the src directory
-TEST_TARGET_IN_CONTAINER="${CONTAINER_APP_DIR}/src/jenkins_mcp_server/tests/functional"
+TEST_TARGET_IN_CONTAINER="${CONTAINER_APP_DIR}/tests"
 SERVER_PORT_FOR_TESTS="8001" # Port for the server started by tests, to avoid conflicts with a potentially running main server
 
 echo "--- Functional Test Runner ---"
@@ -29,7 +28,7 @@ fi
 # Check if the image exists.
 if ! docker image inspect "$IMAGE_NAME" > /dev/null 2>&1; then
     echo "Error: Docker image '$IMAGE_NAME' not found."
-    echo "Please build the image first. You might need to run a script like '${PROJECT_ROOT_ON_HOST}/docker/build'."
+    echo "Please build the image first. You might need to run a script like 'docker/build'."
     echo "Exiting."
     exit 1
 fi
@@ -39,7 +38,7 @@ echo "Running functional tests using pytest..."
 # --rm: Automatically remove the container when it exits.
 # -v: Mount the project's source code into the container.
 #     This ensures the latest code and tests are used.
-#     The source code from ${PROJECT_ROOT_ON_HOST} (e.g., src/jenkins_mcp_server)
+#     The source code from ${PROJECT_ROOT_ON_HOST} (e.g., src/mcp_jenkins)
 #     will be available at ${CONTAINER_APP_DIR} (e.g., /app) in the container.
 # -e: Set environment variables for the test environment.
 #     PYTHONUNBUFFERED=1: Ensures Python output (print statements) is sent directly to stdout/stderr
@@ -53,18 +52,20 @@ echo "Running functional tests using pytest..."
 #   -s: Show print statements (stdout) from tests. This is helpful for debugging.
 docker run -t --rm \
     --name mcp_jenkins_tests \
-    -v "${PROJECT_ROOT_ON_HOST}:${CONTAINER_APP_DIR}/src/jenkins_mcp_server" \
+    -v "$(pwd)/src/mcp_jenkins:${CONTAINER_APP_DIR}/src/mcp_jenkins" \
+    -v "$(pwd)/tests:${CONTAINER_APP_DIR}/tests" \
+    -v "$(pwd)/test_jenkins_data:${CONTAINER_APP_DIR}/test_jenkins_data" \
     -e "PYTHONUNBUFFERED=1" \
     -e "SERVER_PORT=${SERVER_PORT_FOR_TESTS}" \
-    -e "PYTHONPATH=${CONTAINER_APP_DIR}/src" \
-    -e JENKINS_URL=${JENKINS_URL} \
-    -e JENKINS_USER=${JENKINS_USER} \
-    -e JENKINS_API_TOKEN=${JENKINS_API_TOKEN} \
+    -e "PYTHONPATH=${CONTAINER_APP_DIR}/src:${CONTAINER_APP_DIR}/tests" \
+    -e JENKINS_URL \
+    -e JENKINS_USER \
+    -e JENKINS_API_TOKEN \
     -e MCP_API_KEY=${MCP_API_KEY} \
     -e LOG_LEVEL=${LOG_LEVEL:-INFO} \
     -e DEBUG_MODE=${DEBUG_MODE:-False} \
     -e WRITE_LOG_TO_FILE_FOR_TESTS=true \
-    --network host \
+    --network=host \
     --entrypoint pytest \
     "$IMAGE_NAME" \
     "${TEST_TARGET_IN_CONTAINER}" -v -s
