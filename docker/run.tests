@@ -54,13 +54,13 @@ docker run -t --rm \
     --name mcp_jenkins_tests \
     -v "$(pwd)/src/mcp_jenkins:${CONTAINER_APP_DIR}/src/mcp_jenkins" \
     -v "$(pwd)/tests:${CONTAINER_APP_DIR}/tests" \
-    -v "$(pwd)/test_envs:${CONTAINER_APP_DIR}/test_envs" \
+    -v "$(pwd)/test_jenkins_data:${CONTAINER_APP_DIR}/test_jenkins_data" \
     -e "PYTHONUNBUFFERED=1" \
     -e "SERVER_PORT=${SERVER_PORT_FOR_TESTS}" \
     -e "PYTHONPATH=${CONTAINER_APP_DIR}/src:${CONTAINER_APP_DIR}/tests" \
-    -e JENKINS_URL=${JENKINS_URL} \
-    -e JENKINS_USER=${JENKINS_USER} \
-    -e JENKINS_API_TOKEN=${JENKINS_API_TOKEN} \
+    -e JENKINS_URL \
+    -e JENKINS_USER \
+    -e JENKINS_API_TOKEN \
     -e MCP_API_KEY=${MCP_API_KEY} \
     -e LOG_LEVEL=${LOG_LEVEL:-INFO} \
     -e DEBUG_MODE=${DEBUG_MODE:-False} \

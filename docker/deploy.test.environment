@@ -10,6 +10,16 @@ jenkins_password="test"
 jenkins_url="http://localhost:${jenkins_port}"
 jenkins_data_dir="test_jenkins_data"
 
+# Plugin configuration
+folder_plugin_name="cloudbees-folder"
+folder_plugin_hpi_url="https://updates.jenkins.io/latest/${folder_plugin_name}.hpi" # Reverted to .hpi
+plugins_dir="${jenkins_data_dir}/plugins"
+folder_plugin_hpi_path="${plugins_dir}/${folder_plugin_name}.hpi" # Reverted to .hpi
+
+ionicons_api_plugin_name="ionicons-api"
+ionicons_api_plugin_hpi_url="https://updates.jenkins.io/latest/${ionicons_api_plugin_name}.hpi" # Changed to .hpi
+ionicons_api_plugin_hpi_path="${plugins_dir}/${ionicons_api_plugin_name}.hpi" # Changed to .hpi
+
 # Function to run commands and check for errors
 run_command() {
     echo "Executing command: $*"
@@ -43,6 +53,15 @@ run_command docker pull "${jenkins_image}"
 echo "Starting Jenkins container '${jenkins_container_name}' on port ${jenkins_port} using host network..."
 # Create the secrets directory if it doesn't exist
 mkdir -p "${jenkins_data_dir}/secrets"
+
+echo "Creating plugins directory ${plugins_dir}..."
+run_command mkdir -p "${plugins_dir}"
+
+echo "Downloading Folder plugin (${folder_plugin_name}.hpi) to ${folder_plugin_hpi_path}..."
+run_command curl -sSLf -o "${folder_plugin_hpi_path}" "${folder_plugin_hpi_url}"
+
+echo "Downloading ionicons-api plugin (${ionicons_api_plugin_name}.hpi) to ${ionicons_api_plugin_hpi_path}..."
+run_command curl -sSLf -o "${ionicons_api_plugin_hpi_path}" "${ionicons_api_plugin_hpi_url}"
 
 run_command docker run -d --network=host --name "${jenkins_container_name}" \
     -v "$(pwd)/${jenkins_data_dir}:/var/jenkins_home" \

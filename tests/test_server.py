@@ -12,6 +12,18 @@ SERVER_URL = f"http://localhost:{SERVER_PORT}"
 SERVER_COMMAND = ["python", "/app/src/mcp_jenkins/server.py"]
 STARTUP_TIMEOUT = 15  # seconds to wait for server to start (increased slightly for Flask startup)
 
+# API Key for MCP Server communication
+MCP_API_KEY_FOR_TESTS = os.getenv("MCP_API_KEY")
+
+AUTH_REQUEST_HEADERS = {}
+if MCP_API_KEY_FOR_TESTS:
+    AUTH_REQUEST_HEADERS["X-API-Key"] = MCP_API_KEY_FOR_TESTS
+
+AUTH_POST_HEADERS_JSON = {"Content-Type": "application/json"}
+if MCP_API_KEY_FOR_TESTS:
+    AUTH_POST_HEADERS_JSON["X-API-Key"] = MCP_API_KEY_FOR_TESTS
+
+
 assert "6211" in os.environ.get("JENKINS_URL", "")  ## safety check to run only on testing jenkins instances
 
 @pytest.fixture(scope="module")
@@ -72,11 +84,6 @@ def test_server_is_running(server_process):
 
 def test_environment_setup():
     """Test that the necessary environment files and directories exist and are not empty."""
-    # Check if test_envs file exists
-    test_envs_path = "test_envs"
-    assert os.path.exists(test_envs_path), f"The file '{test_envs_path}' does not exist."
-    print(f"File '{test_envs_path}' exists.")
-
     # Check if test_jenkins_data directory is not empty
     test_jenkins_data_path = "test_jenkins_data"
     assert os.path.isdir(test_jenkins_data_path), f"The path '{test_jenkins_data_path}' is not a directory."
@@ -92,7 +99,7 @@ def test_list_jobs_recursive(server_process):
 
     # Non-recursive call
     try:
-        response_non_recursive = requests.get(f"{base_url}/jobs", timeout=10)
+        response_non_recursive = requests.get(f"{base_url}/jobs", timeout=10, headers=AUTH_REQUEST_HEADERS)
         response_non_recursive.raise_for_status() # Raise an exception for HTTP error codes
     except requests.RequestException as e:
         pytest.fail(f"Failed to get non-recursive job list from local server: {e}")
@@ -111,7 +118,7 @@ def test_list_jobs_recursive(server_process):
 
     # Recursive call
     try:
-        response_recursive = requests.get(f"{base_url}/jobs?recursive=true", timeout=20) # Longer timeout
+        response_recursive = requests.get(f"{base_url}/jobs?recursive=true", timeout=20, headers=AUTH_REQUEST_HEADERS) # Longer timeout
         response_recursive.raise_for_status()
     except requests.RequestException as e:
         pytest.fail(f"Failed to get recursive job list from local server: {e}")
@@ -183,13 +190,11 @@ def test_create_and_delete_job(server_process):
         "job_description": "Test job created by functional test at root"
     }
 
-    post_headers = {"Content-Type": "application/json"}
-
     try:
         # Create the job via MCP server
         create_url = f"{SERVER_URL}/job/create"
         print(f"Attempting to create job '{job_name}' via MCP server at {create_url}")
-        create_response = requests.post(create_url, headers=post_headers, json=create_payload, timeout=10)
+        create_response = requests.post(create_url, headers=AUTH_POST_HEADERS_JSON, json=create_payload, timeout=10)
         create_response.raise_for_status()
         assert create_response.status_code == 201, f"Failed to create job via MCP server. Status code: {create_response.status_code}. Response: {create_response.text}"
         print(f"Job '{job_name}' created successfully via MCP server.")
@@ -202,7 +207,7 @@ def test_create_and_delete_job(server_process):
         # Check in the recursive job list from MCP server
         list_jobs_url = f"{SERVER_URL}/jobs?recursive=true" # Use recursive to find it anywhere just in case
         print(f"Verifying job '{job_name}' existence via MCP server at {list_jobs_url}")
-        list_response = requests.get(list_jobs_url, timeout=10)
+        list_response = requests.get(list_jobs_url, timeout=10, headers=AUTH_REQUEST_HEADERS)
         list_response.raise_for_status()
         assert list_response.status_code == 200, f"Failed to list jobs via MCP server for verification. Status code: {list_response.status_code}. Response: {list_response.text}"
 
@@ -225,7 +230,7 @@ def test_create_and_delete_job(server_process):
         delete_url = f"{SERVER_URL}/job/{job_name}/delete" # Use job_name for root deletion
         print(f"Attempting to delete job '{job_name}' via MCP server at {delete_url}")
         try:
-            delete_response = requests.post(delete_url, headers=post_headers, timeout=10)
+            delete_response = requests.post(delete_url, headers=AUTH_POST_HEADERS_JSON, timeout=10)
             delete_response.raise_for_status()
             assert delete_response.status_code == 200, f"Failed to delete job '{job_name}' via MCP server during cleanup. Status code: {delete_response.status_code}. Response: {delete_response.text}"
             print(f"Job '{job_name}' deleted successfully via MCP server.")
@@ -245,14 +250,12 @@ def test_create_and_delete_folder(server_process):
         "folder_name": folder_name
     }
 
-    post_headers = {"Content-Type": "application/json"}
-
     try: # Outer try
         # Clean up any pre-existing folder with the same name
         delete_url_cleanup = f"{SERVER_URL}/job/{folder_name}/delete"
         print(f"Attempting to clean up pre-existing folder '{folder_name}' via MCP server at {delete_url_cleanup}")
         try: # Inner try for cleanup - correctly indented
-            cleanup_response = requests.post(delete_url_cleanup, headers=post_headers, timeout=10)
+            cleanup_response = requests.post(delete_url_cleanup, headers=AUTH_POST_HEADERS_JSON, timeout=10)
             if cleanup_response.status_code == 200:
                 print(f"Pre-existing folder '{folder_name}' cleaned up successfully.")
             elif cleanup_response.status_code == 404:
@@ -274,7 +277,7 @@ def test_create_and_delete_folder(server_process):
         for i in range(max_create_retries): # Correctly indented under outer try
             print(f"Attempting to create folder '{folder_name}' via MCP server at {create_url} (Attempt {i+1}/{max_create_retries})")
             try: # Try for create_response - correctly indented
-                create_response = requests.post(create_url, headers=post_headers, json=create_payload, timeout=10)
+                create_response = requests.post(create_url, headers=AUTH_POST_HEADERS_JSON, json=create_payload, timeout=10)
                 create_response.raise_for_status()
                 assert create_response.status_code == 201, f"Failed to create folder via MCP server. Status code: {create_response.status_code}. Response: {create_response.text}"
                 print(f"Folder '{folder_name}' created successfully via MCP server.")
@@ -298,19 +301,21 @@ def test_create_and_delete_folder(server_process):
         assert created_successfully, f"Failed to create folder '{folder_name}' after {max_create_retries} attempts." # Correctly indented
 
         # We might need to wait a moment for Jenkins to register the folder
-        time.sleep(5) # Give Jenkins more time # Correctly indented
+        time.sleep(10) # Give Jenkins more time # Correctly indented
 
         # Verify the folder exists via MCP server's list jobs endpoint
         verify_exists = False
-        max_verify_retries = 10 # Increased retries for verification
-        verify_retry_delay = 1 # seconds
+        max_verify_retries = 15 # Increased retries for verification
+        verify_retry_delay = 2 # seconds
 
-        list_jobs_url = f"{SERVER_URL}/jobs?recursive=true" # Use recursive to find it anywhere
-        print(f"Verifying folder '{folder_name}' existence via MCP server at {list_jobs_url}")
+        list_jobs_url_base = f"{SERVER_URL}/jobs?recursive=true" # Use recursive to find it anywhere
 
         for i in range(max_verify_retries): # Correctly indented
             try: # Try for list_response - correctly indented
-                list_response = requests.get(list_jobs_url, timeout=10)
+                # Add cache-busting parameter
+                list_jobs_url_with_buster = f"{list_jobs_url_base}&_cb={time.time_ns()}"
+                print(f"Verifying folder '{folder_name}' existence via MCP server at {list_jobs_url_with_buster} (Attempt {i+1}/{max_verify_retries})")
+                list_response = requests.get(list_jobs_url_with_buster, timeout=10, headers=AUTH_REQUEST_HEADERS)
                 list_response.raise_for_status()
                 assert list_response.status_code == 200, f"Failed to list jobs via MCP server for verification. Status code: {list_response.status_code}. Response: {list_response.text}"
 
@@ -350,7 +355,7 @@ def test_create_and_delete_folder(server_process):
         for i in range(max_delete_retries): # Correctly indented
             print(f"Attempting to delete folder '{folder_name}' via MCP server at {delete_url} (Attempt {i+1}/{max_delete_retries})")
             try: # Try for delete_response - correctly indented
-                delete_response = requests.post(delete_url, headers=post_headers, timeout=10)
+                delete_response = requests.post(delete_url, headers=AUTH_POST_HEADERS_JSON, timeout=10)
                 delete_response.raise_for_status()
                 assert delete_response.status_code == 200, f"Failed to delete folder '{folder_name}' via MCP server during cleanup. Status code: {delete_response.status_code}. Response: {delete_response.text}"
                 print(f"Folder '{folder_name}' deleted successfully via MCP server.")

@@ -102,13 +102,22 @@ def connect_to_jenkins():
     else:
         server = jenkins.Jenkins(JENKINS_URL, timeout=timeout)
     try:
-        server.get_whoami() # Test connection
-        logger.info(f"Successfully connected to Jenkins server at {JENKINS_URL}")
+        if JENKINS_USER and JENKINS_API_TOKEN:
+            server.get_whoami() # Test connection with auth
+            logger.info(f"Successfully connected to Jenkins server (authenticated) at {JENKINS_URL}")
+        else:
+            # Use get_version() for anonymous connection test, as it's generally more robust
+            version = server.get_version()
+            logger.info(f"Successfully connected to Jenkins server (anonymously, version: {version}) at {JENKINS_URL}")
         return server
     except jenkins.JenkinsException as e:
         status_code = getattr(e, 'status_code', 'N/A')
         response_body = getattr(e, 'response_body', 'N/A')
-        logger.critical(f"Failed to connect to Jenkins: {e}. Status Code: {status_code}, Response Body: {response_body}")
+        # Ensure response_body is logged, truncated if too long
+        log_response_body = response_body
+        if isinstance(response_body, str) and len(response_body) > 500: # Truncate long HTML responses
+            log_response_body = response_body[:500] + "... (truncated)"
+        logger.critical(f"Failed to connect to Jenkins: {e}. Status Code: {status_code}, Response Body: {log_response_body}")
         raise # Re-raise to prevent app from starting if Jenkins connection fails initially
 
 try:
@@ -206,7 +215,13 @@ def health_check():
     """Provides a health check for the service and Jenkins connection."""
     try:
         # Use a direct, non-retrying call for health check to get current status
-        jenkins_server.get_whoami() # Test connection without retry for health status
+        # Align with the connection logic: get_whoami for auth, get_version for anonymous
+        if JENKINS_USER and JENKINS_API_TOKEN:
+            jenkins_server.get_whoami() # Test connection with auth
+            logger.debug("Health check: Jenkins connection test (get_whoami) successful.")
+        else:
+            version = jenkins_server.get_version() # Test connection anonymously
+            logger.debug(f"Health check: Jenkins connection test (get_version) successful. Version: {version}")
         jenkins_status = "connected"
         status_code = 200
     except jenkins.JenkinsException as e:
@@ -308,14 +323,19 @@ def list_jobs():
     folder_name = request.args.get('folder_name')
     recursive_str = request.args.get('recursive', 'false').lower()
     recursive = recursive_str == 'true'
-    logger.debug(f"list_jobs: ENTER - folder_name='{folder_name}', recursive_str='{recursive_str}' -> recursive={recursive}")
+    cache_buster = request.args.get('_cb') # Check for cache-busting parameter
+    logger.debug(f"list_jobs: ENTER - folder_name='{folder_name}', recursive_str='{recursive_str}' -> recursive={recursive}, _cb='{cache_buster}'")
 
     cache_key = f"list_jobs::{folder_name}::recursive={recursive}"
-    cached_result = job_list_cache.get(cache_key)
-    if cached_result:
-        logger.info(f"Returning cached job list for key: {cache_key}")
-        logger.debug(f"list_jobs: EXIT (from cache)")
-        return jsonify({"jobs": cached_result, "source": "cache"})
+    
+    if not cache_buster: # Only attempt to use cache if _cb is NOT present
+        cached_result = job_list_cache.get(cache_key)
+        if cached_result:
+            logger.info(f"Returning cached job list for key: {cache_key}")
+            logger.debug(f"list_jobs: EXIT (from cache)")
+            return jsonify({"jobs": cached_result, "source": "cache"})
+    else:
+        logger.info(f"Cache buster ('_cb={cache_buster}') present, bypassing cache for key: {cache_key}")
 
     try:
         @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
