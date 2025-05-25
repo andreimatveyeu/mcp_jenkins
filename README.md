@@ -10,7 +10,7 @@ This project provides a Model Context Protocol (MCP) server for interacting with
 
 ## Installation
 
-To install the package and make the console scripts available, run:
+To install the package, run:
 
 ```bash
 pip install .
@@ -18,38 +18,31 @@ pip install .
 
 ## Usage
 
-Once the package is installed using `pip install .`, the following console scripts become available in your shell environment:
-
-*   `mcp_jenkins_server`: Runs the MCP server.
-*   `mcp_jenkins_client`: Runs an example client.
-*   `mcp_jenkins_run_docker_build`: Builds the Docker image for the server. This should be run before executing tests.
-*   `mcp_jenkins_run_docker_tests`: Runs tests using Docker (e.g., server/client/server tests). This script typically requires the Docker image to be built first using `mcp_jenkins_run_docker_build`.
-
-These scripts eliminate the need to manually manage Python paths or install requirements separately if the package has been installed.
-
 ### Common Workflows
 
 #### Running the Server
 
-To run the MCP server using the installed script:
+To run the MCP server:
 
 ```bash
-mcp_jenkins_server
+./docker/run.server
 ```
 
 #### Running the Example Client
 
-To run the example client using the installed script:
+To run the example client:
 
 ```bash
-mcp_jenkins_client
+./docker/run.client
 ```
 
 For example, to list builds for a job named "backups" using a specific model, you can run:
 
 ```bash
-mcp_jenkins_client --model gemini-2.0-flash-001 "list builds backups"
+./docker/run.client --model gemini-2.0-flash-001 "list builds backups"
 ```
+
+Note: If the package is installed via `pip install .`, the `mcp_jenkins_client` console script is also available.
 
 This might produce output similar to:
 
@@ -67,15 +60,23 @@ A common workflow for development and testing is to first build the Docker image
 1.  **Build the Docker image:**
     This step prepares the environment needed for testing.
     ```bash
-    mcp_jenkins_run_docker_build
+    ./docker/build
     ```
 
 2.  **Run tests:**
     After the build is complete, execute the tests.
     ```bash
-    mcp_jenkins_run_docker_tests
+    ./docker/run.tests
     ```
 This sequence ensures that tests are performed against the latest build in a consistent Dockerized environment.
+
+#### Deploying a Test Environment
+
+To deploy a local Jenkins testing instance (without authentication, for functional tests only):
+
+```bash
+./docker/deploy.test.environment
+```
 
 ## OpenWebUI Integration
 
