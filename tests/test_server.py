@@ -347,24 +347,39 @@ def test_create_and_delete_job(server_process):
 
         # Verify the job exists via MCP server's list jobs endpoint
         # We might need to wait a moment for Jenkins to register the job
-        time.sleep(2) # Give Jenkins a moment
+        time.sleep(2) # Initial wait for Jenkins
 
         verify_exists = False
-        # Check in the recursive job list from MCP server
-        list_jobs_url = f"{SERVER_URL}/jobs?recursive=true" # Use recursive to find it anywhere just in case
-        print(f"Verifying job '{job_name}' existence via MCP server at {list_jobs_url}")
-        list_response = requests.get(list_jobs_url, timeout=10, headers=AUTH_REQUEST_HEADERS)
-        list_response.raise_for_status()
-        assert list_response.status_code == 200, f"Failed to list jobs via MCP server for verification. Status code: {list_response.status_code}. Response: {list_response.text}"
+        max_verify_retries = 15
+        verify_retry_delay = 2 # seconds
+        list_jobs_url_base = f"{SERVER_URL}/jobs?recursive=true"
 
-        jobs_data = list_response.json().get("jobs", [])
-        for job in jobs_data:
-            if job.get("name") == job_name: # Check for root level name
-                verify_exists = True
-                print(f"Job '{job_name}' verified to exist via MCP server listing.")
-                break
+        for i in range(max_verify_retries):
+            # Add cache-busting parameter
+            list_jobs_url_with_buster = f"{list_jobs_url_base}&_cb={time.time_ns()}"
+            print(f"Verifying job '{job_name}' existence via MCP server at {list_jobs_url_with_buster} (Attempt {i+1}/{max_verify_retries})")
+            try:
+                list_response = requests.get(list_jobs_url_with_buster, timeout=10, headers=AUTH_REQUEST_HEADERS)
+                list_response.raise_for_status()
+                assert list_response.status_code == 200, f"Failed to list jobs via MCP server for verification. Status code: {list_response.status_code}. Response: {list_response.text}"
 
-        assert verify_exists, f"Job '{job_name}' not found in MCP server job listing after creation."
+                jobs_data = list_response.json().get("jobs", [])
+                for job_item in jobs_data:
+                    if job_item.get("name") == job_name and job_item.get("type") != "folder": # Ensure it's a job, not a folder with the same name
+                        verify_exists = True
+                        print(f"Job '{job_name}' verified to exist via MCP server listing.")
+                        break
+                if verify_exists:
+                    break # Exit retry loop on success
+            except requests.RequestException as e:
+                print(f"Request error during job verification (Attempt {i+1}): {e}. Retrying...")
+            except Exception as e:
+                print(f"An unexpected error occurred during job verification (Attempt {i+1}): {e}. Retrying...")
+            
+            if i < max_verify_retries - 1:
+                time.sleep(verify_retry_delay)
+
+        assert verify_exists, f"Job '{job_name}' not found in MCP server job listing after creation and {max_verify_retries} verification attempts."
 
     except requests.RequestException as e:
         pytest.fail(f"Test failed during job creation or verification via MCP server: {e}")
@@ -375,15 +390,37 @@ def test_create_and_delete_job(server_process):
         # Clean up: Delete the job via MCP server
         delete_url = f"{SERVER_URL}/job/{job_name}/delete" # Use job_name for root deletion
         print(f"Attempting to delete job '{job_name}' via MCP server at {delete_url}")
-        try:
-            delete_response = requests.post(delete_url, headers=AUTH_POST_HEADERS_JSON, timeout=10)
-            delete_response.raise_for_status()
-            assert delete_response.status_code == 200, f"Failed to delete job '{job_name}' via MCP server during cleanup. Status code: {delete_response.status_code}. Response: {delete_response.text}"
-            print(f"Job '{job_name}' deleted successfully via MCP server.")
-        except requests.RequestException as e:
-            print(f"Warning: Failed to delete job '{job_name}' via MCP server during cleanup: {e}")
-        except Exception as e:
-            print(f"Warning: An unexpected error occurred during job deletion cleanup via MCP server: {e}")
+        
+        # Retry logic for job deletion
+        max_delete_retries = 5
+        delete_retry_delay = 2 # seconds
+        deleted_successfully_in_finally = False
+
+        for i in range(max_delete_retries):
+            try:
+                delete_response = requests.post(delete_url, headers=AUTH_POST_HEADERS_JSON, timeout=10)
+                delete_response.raise_for_status() # Raises HTTPError for bad responses (4xx or 5xx)
+                if delete_response.status_code == 200:
+                    print(f"Job '{job_name}' deleted successfully via MCP server.")
+                    deleted_successfully_in_finally = True
+                    break
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    print(f"Job '{job_name}' not found for deletion (status 404) during cleanup. Assuming already deleted or never fully created.")
+                    deleted_successfully_in_finally = True # Treat as success for cleanup
+                    break
+                else:
+                    print(f"HTTP error during job deletion (Attempt {i+1}/{max_delete_retries}): {e}. Retrying...")
+            except requests.RequestException as e:
+                print(f"Request error during job deletion (Attempt {i+1}/{max_delete_retries}): {e}. Retrying...")
+            except Exception as e:
+                print(f"An unexpected error occurred during job deletion (Attempt {i+1}/{max_delete_retries}): {e}. Retrying...")
+
+            if i < max_delete_retries - 1:
+                time.sleep(delete_retry_delay)
+        
+        if not deleted_successfully_in_finally:
+            print(f"Warning: Failed to definitively delete job '{job_name}' after {max_delete_retries} attempts during cleanup.")
 
 def test_create_and_delete_folder(server_process):
     """Test creating, verifying, and deleting a Jenkins folder via the MCP server."""
