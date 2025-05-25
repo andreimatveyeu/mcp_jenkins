@@ -8,6 +8,13 @@ A Jenkins MCP server. Model Context Protocol (MCP) lets AI tools (like chatbots)
 
 This project provides a Model Context Protocol (MCP) server for interacting with Jenkins. It allows users to trigger Jenkins jobs, get build statuses, and perform other Jenkins-related operations through the MCP interface.
 
+## Components
+
+*   [`server.py`](src/mcp_jenkins/server.py): The core MCP Jenkins server application.
+*   [`functions_schema.md`](src/mcp_jenkins/functions_schema.md): Defines the schema for the functions exposed by the MCP Jenkins server.
+*   [`client.py`](src/mcp_jenkins/client.py): An example client demonstrating how to interact with the MCP Jenkins server (provided for reference only).
+*   [`functional tests`](src/mcp_jenkins/tests/functional/test_server.py): Contains functional tests for the MCP Jenkins server.
+
 ## Installation
 
 To install the package, run:
