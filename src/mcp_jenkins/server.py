@@ -167,7 +167,7 @@ class BuildJobPayload(BaseModel):
 
 class CreateJobPayload(BaseModel):
     job_name: str
-    command: str # New field for shell command
+    command: Optional[str] = None # Make command optional
     folder_name: Optional[str] = None
     job_description: Optional[str] = "Job created via MCP"
 
@@ -800,6 +800,9 @@ def create_jenkins_job():
         logger.info(f"Creating job '{full_job_name}' at the root level.")
 
     shell_command = payload.command
+    if shell_command is None:
+        return make_error_response("The 'command' field is required to create a Jenkins job. Please provide a shell command to execute.", 400)
+
     description = payload.job_description or f"MCP Created shell job: {full_job_name}"
 
     job_config_xml = JOB_XML_CONFIG_TEMPLATE.format(shell_command=shell_command, description=description)
@@ -852,8 +855,8 @@ def create_jenkins_job():
     except jenkins.JenkinsException as e:
         logger.error(f"Jenkins API error during job creation for '{full_job_name}': {e}")
         if "No such folder" in str(e) or "does not exist" in str(e):
-             logger.error(f"It seems the base folder 'ProjectCI' might not exist or there are permission issues.")
-             return make_error_response(f"Jenkins API error: Could not create job, possibly 'ProjectCI' folder missing or permission issues. Details: {str(e)}", 500)
+             logger.error(f"It seems the base folder '{payload.folder_name}' might not exist or there are permission issues.")
+             return make_error_response(f"Jenkins API error: Could not create job, possibly folder '{payload.folder_name}' missing or permission issues. Details: {str(e)}", 500)
         return make_error_response(f"Jenkins API error: {str(e)}", 500)
     except RetryError as e:
         logger.error(f"Jenkins API error after retries during job creation for '{full_job_name}': {e}")
