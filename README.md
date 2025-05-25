@@ -78,6 +78,34 @@ To deploy a local Jenkins testing instance (without authentication, for function
 ./docker/deploy.test.environment
 ```
 
+### Connecting to an Existing Jenkins Instance
+
+To use the MCP Jenkins server with an existing Jenkins instance, you need to configure the following environment variables:
+
+*   `JENKINS_URL`: The full URL of your Jenkins instance (e.g., `http://your-jenkins-host:8080`). This is **required**.
+*   `JENKINS_USER`: (Optional) Your Jenkins username if authentication is required.
+*   `JENKINS_API_TOKEN`: (Optional) Your Jenkins API token. This must be provided along with `JENKINS_USER` if authentication is used. You can generate an API token in your Jenkins user's configuration page (`<Jenkins URL>/me/configure`).
+*   `MCP_API_KEY`: A secret API key to secure this MCP server. Requests to the MCP server will need to include this key in the `X-API-Key` header. This is **required** unless `DEBUG_MODE` is set to `true`.
+*   `DEBUG_MODE`: Set to `true` to run the MCP server in debug mode, which bypasses the `MCP_API_KEY` requirement and provides more verbose logging. **Do not use in production.**
+
+**Example Configuration (Bash):**
+
+```bash
+export JENKINS_URL="http://your-jenkins-host:8080"
+export JENKINS_USER="your_jenkins_username"
+export JENKINS_API_TOKEN="your_jenkins_api_token"
+export MCP_API_KEY="your_mcp_secret_key"
+# export DEBUG_MODE="true" # Uncomment for development/testing without MCP_API_KEY
+```
+
+Once these environment variables are set, you can run the MCP server using the Docker script:
+
+```bash
+./docker/run.server
+```
+
+The MCP server will then attempt to connect to your specified Jenkins instance.
+
 ## OpenWebUI Integration
 
 The file `open-webui/open_webui_interface.py` provides an example of how to integrate this MCP Jenkins server with an OpenWebUI instance.
