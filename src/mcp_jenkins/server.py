@@ -6,6 +6,7 @@ import jenkins
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
 from tenacity import retry, stop_after_attempt, wait_exponential, RetryError
+import time # Added missing import
 from cachetools import TTLCache
 from pydantic import BaseModel, ValidationError, root_validator
 from typing import Optional, Dict, Any, Literal
@@ -100,7 +101,8 @@ def connect_to_jenkins():
     if JENKINS_USER and JENKINS_API_TOKEN:
         server = jenkins.Jenkins(JENKINS_URL, username=JENKINS_USER, password=JENKINS_API_TOKEN, timeout=timeout)
     else:
-        server = jenkins.Jenkins(JENKINS_URL, timeout=timeout)
+        # Explicitly pass None for username and password for anonymous connection
+        server = jenkins.Jenkins(JENKINS_URL, username=None, password=None, timeout=timeout)
     try:
         if JENKINS_USER and JENKINS_API_TOKEN:
             server.get_whoami() # Test connection with auth
@@ -181,8 +183,8 @@ class CreateJobPayload(BaseModel):
         folder_name = values.get('folder_name') # Read folder_name
 
         # Basic validation for folder_name if provided
-        if folder_name is not None and '/' in folder_name:
-             raise ValueError("Folder name cannot contain '/'. Use nested calls if needed.")
+        # if folder_name is not None and '/' in folder_name: # This validation was too restrictive for nested job creation
+        #      raise ValueError("Folder name cannot contain '/'. Use nested calls if needed.")
 
         if job_type == "calendar":
             if month is None or year is None:
@@ -851,6 +853,27 @@ def create_jenkins_job():
         description = payload.job_description or f"Weather job for {safe_city} (created via MCP)"
 
     job_config_xml = JOB_XML_CONFIG_TEMPLATE.format(shell_command=shell_command, description=description)
+
+    # Explicitly ensure parent folder exists before attempting to create job in it
+    if payload.folder_name:
+        logger.info(f"Ensuring parent folder '{payload.folder_name}' exists before creating job '{payload.job_name}'.")
+        try:
+            jenkins_server.create_folder(payload.folder_name)
+            # If create_folder succeeds, it means the folder was created or already existed and the method handled it (though python-jenkins typically errors if it exists)
+            # However, python-jenkins create_folder DOES raise an exception if it already exists.
+            logger.info(f"Parent folder '{payload.folder_name}' ensured (likely created by create_folder call if it didn't exist).")
+            time.sleep(2) 
+        except jenkins.JenkinsException as e_folder:
+            if "already exists" in str(e_folder).lower():
+                logger.warning(f"Parent folder '{payload.folder_name}' already existed (confirmed by create_folder exception: {e_folder}). Proceeding.")
+                time.sleep(2) # Still give a small delay
+            else:
+                # A different JenkinsException occurred, this is a real problem
+                logger.error(f"Jenkins API error while ensuring parent folder '{payload.folder_name}' with create_folder: {e_folder}")
+                return make_error_response(f"Failed to ensure parent folder '{payload.folder_name}': {str(e_folder)}", 500)
+        except Exception as e_generic_folder:
+            logger.error(f"Unexpected error while ensuring parent folder '{payload.folder_name}': {e_generic_folder}", exc_info=True)
+            return make_error_response(f"Unexpected error ensuring parent folder '{payload.folder_name}': {str(e_generic_folder)}", 500)
 
     try:
         @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)

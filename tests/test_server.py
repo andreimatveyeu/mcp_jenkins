@@ -91,7 +91,153 @@ def test_environment_setup():
     print(f"Directory '{test_jenkins_data_path}' exists and is not empty.")
 
 
-def test_list_jobs_recursive(server_process):
+@pytest.fixture(scope="function")
+def jenkins_job_structure(request, server_process):
+    """
+    Setup fixture to create a specific Jenkins job/folder structure via API calls for testing.
+    Teardown fixture to remove the created structure via API calls.
+    """
+    assert server_process is not None, "Server process fixture failed to run."
+
+    # Define the structure to create via API calls
+    # (name, type, parent_folder)
+    structure_elements = [
+        ("jobA", "job", None),
+        ("folderB", "folder", None),
+        ("jobB1", "job", "folderB"),
+        ("folderB1", "folder", "folderB"),
+        ("folderB2", "folder", "folderB/folderB1"),
+        ("jobB2", "job", "folderB/folderB1/folderB2"),
+    ]
+
+    created_elements = [] # To keep track for teardown
+
+    # --- Pre-cleanup step ---
+    print("\nAttempting pre-cleanup of Jenkins job and folder structure...")
+    # Define top-level items that might exist from previous runs
+    # These are the items that would be created at the root by this fixture
+    pre_cleanup_items = ["jobA", "folderB"] 
+    for item_name_to_delete in pre_cleanup_items:
+        delete_url = f"{SERVER_URL}/job/{item_name_to_delete}/delete" # Folders are deleted via /job/<name>/delete
+        print(f"Pre-cleanup: Attempting to delete '{item_name_to_delete}' via MCP server at {delete_url}")
+        try:
+            # Using a shorter timeout for cleanup, as failure here is not critical for the test itself
+            delete_response = requests.post(delete_url, headers=AUTH_POST_HEADERS_JSON, timeout=10)
+            if delete_response.status_code == 200:
+                print(f"Pre-cleanup: Successfully deleted '{item_name_to_delete}'.")
+            elif delete_response.status_code == 404:
+                print(f"Pre-cleanup: '{item_name_to_delete}' not found, no need to delete.")
+            else:
+                # Log other statuses but don't fail the fixture setup
+                print(f"Pre-cleanup: Warning - Deleting '{item_name_to_delete}' returned status {delete_response.status_code}. Response: {delete_response.text}")
+        except requests.RequestException as e:
+            print(f"Pre-cleanup: Warning - Request error deleting '{item_name_to_delete}': {e}")
+        except Exception as e:
+            print(f"Pre-cleanup: Warning - Unexpected error deleting '{item_name_to_delete}': {e}")
+        time.sleep(1) # Small delay after each potential delete
+
+    print("\nCreating Jenkins job and folder structure via API for test...")
+
+    for name, item_type, parent_folder in structure_elements:
+        full_item_path = f"{parent_folder}/{name}" if parent_folder else name
+        print(f"Attempting to create {item_type}: {full_item_path}")
+
+        payload = {}
+        if item_type == "folder":
+            create_url = f"{SERVER_URL}/folder/create"
+            payload["folder_name"] = full_item_path # Pass the full path of the folder to create
+        elif item_type == "job":
+            create_url = f"{SERVER_URL}/job/create"
+            payload["job_name"] = name # Simple name for the job
+            if parent_folder:
+                payload["folder_name"] = parent_folder # Full path of the parent folder
+            # Add job-specific details
+            payload["job_type"] = "calendar"
+            payload["month"] = 1
+            payload["year"] = 2025
+        else:
+            # Should not happen based on structure_elements
+            pytest.fail(f"Unknown item_type: {item_type}")
+
+        max_retries = 10
+        retry_delay = 2
+        success = False
+
+        for i in range(max_retries):
+            try:
+                create_response = requests.post(create_url, headers=AUTH_POST_HEADERS_JSON, json=payload, timeout=15)
+                create_response.raise_for_status()
+                assert create_response.status_code == 201, f"Failed to create {item_type} '{full_item_path}'. Status: {create_response.status_code}. Response: {create_response.text}"
+                print(f"Successfully created {item_type}: {full_item_path}")
+                created_elements.append(full_item_path)
+                success = True
+                break
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 409: # Conflict - already exists
+                    print(f"{item_type} '{full_item_path}' already exists (status 409). Assuming it exists and proceeding.")
+                    created_elements.append(full_item_path) # Add to list for cleanup
+                    success = True
+                    break
+                else:
+                    print(f"HTTP error creating {item_type} '{full_item_path}' (Attempt {i+1}/{max_retries}): {e}. Retrying...")
+            except requests.RequestException as e:
+                print(f"Request error creating {item_type} '{full_item_path}' (Attempt {i+1}/{max_retries}): {e}. Retrying...")
+            except Exception as e:
+                print(f"An unexpected error occurred creating {item_type} '{full_item_path}' (Attempt {i+1}/{max_retries}): {e}. Retrying...")
+            
+            time.sleep(retry_delay)
+        
+        assert success, f"Failed to create {item_type} '{full_item_path}' after {max_retries} attempts."
+        time.sleep(5) # Give Jenkins time to process each creation
+
+    # Teardown function
+    def teardown():
+        print("\nCleaning up Jenkins job and folder structure via API after test...")
+        # Delete in reverse order of creation, starting with top-level folders/jobs
+        # This ensures nested items are deleted when their parent folder is deleted
+        # Or, more simply, just delete the top-level items, and Jenkins will handle recursion for folders.
+        
+        # The order of deletion matters for nested structures.
+        # Delete jobA and folderB (which should recursively delete its contents)
+        elements_to_delete = ["folderB", "jobA"] # Delete folderB first to clean up its contents
+
+        for full_name in elements_to_delete:
+            delete_url = f"{SERVER_URL}/job/{full_name}/delete"
+            print(f"Attempting to delete '{full_name}' via MCP server at {delete_url}")
+            max_retries = 10
+            retry_delay = 2
+            deleted_successfully = False
+
+            for i in range(max_retries):
+                try:
+                    delete_response = requests.post(delete_url, headers=AUTH_POST_HEADERS_JSON, timeout=15)
+                    delete_response.raise_for_status()
+                    assert delete_response.status_code == 200, f"Failed to delete '{full_name}'. Status: {delete_response.status_code}. Response: {delete_response.text}"
+                    print(f"Successfully deleted '{full_name}'.")
+                    deleted_successfully = True
+                    break
+                except requests.exceptions.HTTPError as e:
+                    if e.response.status_code == 404:
+                        print(f"'{full_name}' not found for deletion (status 404). Already removed or never created. Proceeding.")
+                        deleted_successfully = True
+                        break
+                    else:
+                        print(f"HTTP error deleting '{full_name}' (Attempt {i+1}/{max_retries}): {e}. Retrying...")
+                except requests.RequestException as e:
+                    print(f"Request error deleting '{full_name}' (Attempt {i+1}/{max_retries}): {e}. Retrying...")
+                except Exception as e:
+                    print(f"An unexpected error occurred deleting '{full_name}' (Attempt {i+1}/{max_retries}): {e}. Retrying...")
+                
+                time.sleep(retry_delay)
+            
+            if not deleted_successfully:
+                print(f"Warning: Failed to delete '{full_name}' after {max_retries} attempts during cleanup.")
+            time.sleep(2) # Give Jenkins time to process each deletion
+
+    request.addfinalizer(teardown)
+    yield
+
+def test_list_jobs_recursive(server_process, jenkins_job_structure):
     """Test recursive listing of jobs via the local MCP server."""
     assert server_process is not None, "Server process fixture failed to run."
 
