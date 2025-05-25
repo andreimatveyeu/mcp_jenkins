@@ -104,44 +104,10 @@ def _prompt_for_missing_details_create_job(params):
         if not params["job_name"]:
             return "Job name cannot be empty."
 
-    if not params.get("job_type"):
-        while True:
-            job_type_input = input("Enter job type (calendar/weather): ").strip().lower()
-            if job_type_input in ["calendar", "weather"]:
-                params["job_type"] = job_type_input
-                break
-            else:
-                print("Invalid job type. Please enter 'calendar' or 'weather'.")
-
-    if params["job_type"] == "calendar":
-        if not params.get("month"):
-            while True:
-                try:
-                    month_input = int(input("Enter month (1-12) for calendar job: ").strip())
-                    if 1 <= month_input <= 12:
-                        params["month"] = month_input
-                        break
-                    else:
-                        print("Month must be between 1 and 12.")
-                except ValueError:
-                    print("Invalid month. Please enter a number.")
-        if not params.get("year"):
-            while True:
-                try:
-                    year_input = int(input("Enter year (e.g., 2024) for calendar job: ").strip())
-                    # Basic year validation, can be more robust
-                    if 1900 <= year_input <= 2100:
-                        params["year"] = year_input
-                        break
-                    else:
-                        print("Year seems invalid. Please enter a valid year (e.g., 1900-2100).")
-                except ValueError:
-                    print("Invalid year. Please enter a number.")
-    elif params["job_type"] == "weather":
-        if not params.get("city"):
-            params["city"] = input("Enter city for weather job: ").strip()
-            if not params["city"]:
-                return "City name cannot be empty for weather job."
+    if not params.get("command"):
+        params["command"] = input("Enter the shell command to execute: ").strip()
+        if not params["command"]:
+            return "Shell command cannot be empty."
     
     if "job_description" not in params: # Optional, but good to ask if not provided by LLM
         desc_input = input("Enter an optional job description (or press Enter to skip): ").strip()
@@ -262,14 +228,12 @@ def execute_instruction(instruction):
         if isinstance(updated_params, str): # Error message returned
             return updated_params
 
-        # Server expects payload like:
-        # { "job_name": "name", "job_type": "calendar", "month": 1, "year": 2023, "city": null, "job_description": "desc" }
+        # Server now expects payload like:
+        # { "job_name": "name", "command": "echo hello", "folder_name": "folder", "job_description": "desc" }
         payload_for_server = {
             "job_name": updated_params.get("job_name"),
-            "job_type": updated_params.get("job_type"),
-            "month": updated_params.get("month"),
-            "year": updated_params.get("year"),
-            "city": updated_params.get("city"),
+            "command": updated_params.get("command"),
+            "folder_name": updated_params.get("folder_name"),
             "job_description": updated_params.get("job_description")
         }
         

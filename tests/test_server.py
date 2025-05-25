@@ -151,10 +151,9 @@ def jenkins_job_structure(request, server_process):
             payload["job_name"] = name # Simple name for the job
             if parent_folder:
                 payload["folder_name"] = parent_folder # Full path of the parent folder
-            # Add job-specific details
-            payload["job_type"] = "calendar"
-            payload["month"] = 1
-            payload["year"] = 2025
+            # All jobs are now shell script jobs
+            payload["command"] = f"echo Hello from {name}!" # Default command for test jobs
+            payload["job_description"] = f"Test job {name} created by functional test"
         else:
             # Should not happen based on structure_elements
             pytest.fail(f"Unknown item_type: {item_type}")
@@ -329,10 +328,7 @@ def test_create_and_delete_job(server_process):
     # Payload for the MCP server's /job/create endpoint
     create_payload = {
         "job_name": job_name,
-        "job_type": "calendar", # Using calendar type as an example
-        # No folder_name in payload for root creation
-        "month": 1,
-        "year": 2025,
+        "command": "echo Hello from test-create-and-delete-job!", # All jobs are now shell script jobs
         "job_description": "Test job created by functional test at root"
     }
 

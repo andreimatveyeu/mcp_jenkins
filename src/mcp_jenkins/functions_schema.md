@@ -178,14 +178,12 @@ Available functions and their schemas:
         Can be a specific number (e.g., 123, "123").
         Supported keywords: "lastBuild", "lastSuccessfulBuild", "lastCompletedBuild".
 
-6. create_job: Creates a new Jenkins job.
+6. create_job: Creates a new Jenkins job that executes a shell command.
     Action name: "create_job"
     Parameters:
-        - job_name (string, optional): The desired name for the new job (e.g., "my-new-job"). Will be placed under 'ProjectCI/' folder.
-        - job_type (string, optional, enum: "calendar", "weather"): The type of job to create.
-        - month (integer, optional): For "calendar" jobs, the month (1-12).
-        - year (integer, optional): For "calendar" jobs, the year (e.g., 2024).
-        - city (string, optional): For "weather" jobs, the city name.
+        - job_name (string, required): The desired name for the new job (e.g., "my-new-job").
+        - command (string, required): The shell command to be executed by the job (e.g., "echo Hello World").
+        - folder_name (string, optional): The name of the folder to create the job in (e.g., "MyFolder").
         - job_description (string, optional): A description for the job.
 
 User query: "{query}"
@@ -281,28 +279,14 @@ Output:
 }}
 (This assumes getting the build status for jobX is the primary intent here).
 
-Query: "create a calendar job for December 2025 named dec-calendar"
+Query: "create a job named my-first-shell-job that runs 'echo Hello from Jenkins!'"
 Output:
 {{
     "action": "create_job",
     "parameters": {{
-    "job_name": "dec-calendar",
-    "job_type": "calendar",
-    "month": 12,
-    "year": 2025,
-    "job_description": "Calendar job for December 2025"
-    }}
-}}
-
-Query: "make a weather job for Paris called paris-weather"
-Output:
-{{
-    "action": "create_job",
-    "parameters": {{
-    "job_name": "paris-weather",
-    "job_type": "weather",
-    "city": "Paris",
-    "job_description": "Weather job for Paris"
+    "job_name": "my-first-shell-job",
+    "command": "echo Hello from Jenkins!",
+    "job_description": "A simple shell job"
     }}
 }}
 

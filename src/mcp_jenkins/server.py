@@ -167,37 +167,9 @@ class BuildJobPayload(BaseModel):
 
 class CreateJobPayload(BaseModel):
     job_name: str
-    job_type: Literal["calendar", "weather"]
-    folder_name: Optional[str] = None # Added optional folder_name
-    month: Optional[int] = None
-    year: Optional[int] = None
-    city: Optional[str] = None
+    command: str # New field for shell command
+    folder_name: Optional[str] = None
     job_description: Optional[str] = "Job created via MCP"
-
-    @root_validator(skip_on_failure=True)
-    def check_conditional_fields(cls, values):
-        job_type = values.get('job_type')
-        month = values.get('month')
-        year = values.get('year')
-        city = values.get('city')
-        folder_name = values.get('folder_name') # Read folder_name
-
-        # Basic validation for folder_name if provided
-        # if folder_name is not None and '/' in folder_name: # This validation was too restrictive for nested job creation
-        #      raise ValueError("Folder name cannot contain '/'. Use nested calls if needed.")
-
-        if job_type == "calendar":
-            if month is None or year is None:
-                raise ValueError("For calendar jobs, 'month' and 'year' are required.")
-            if not (1 <= month <= 12):
-                raise ValueError("Month must be between 1 and 12.")
-            # Basic year check, can be more sophisticated
-            if not (1900 <= year <= 2100):
-                raise ValueError("Year must be between 1900 and 2100.")
-        elif job_type == "weather":
-            if not city:
-                raise ValueError("For weather jobs, 'city' is required.")
-        return values
 
 # --- Helper for Standard Error Response ---
 def make_error_response(message, status_code):
@@ -798,21 +770,12 @@ JOB_XML_CONFIG_TEMPLATE = """<?xml version='1.1' encoding='UTF-8'?>
 @limiter.limit("20 per hour") # Limit job creation rate
 def create_jenkins_job():
     """
-    Creates a new Jenkins job in the 'ProjectCI' folder.
-    Job types: 'calendar' (runs cal command) or 'weather' (runs curl for wttr.in).
+    Creates a new Jenkins job that executes a shell command.
     Payload:
     {
-        "job_name": "my-calendar-job",
-        "job_type": "calendar",
-        "month": 12,
-        "year": 2024,
-        "job_description": "Optional description"
-    }
-    or
-    {
-        "job_name": "my-weather-job",
-        "job_type": "weather",
-        "city": "London",
+        "job_name": "my-shell-job",
+        "command": "echo Hello, Jenkins!",
+        "folder_name": "MyFolder", # Optional
         "job_description": "Optional description"
     }
     """
@@ -830,27 +793,14 @@ def create_jenkins_job():
 
     # Construct full job name based on folder_name
     if payload.folder_name:
-        # Ensure folder exists or handle creation if needed (beyond current scope)
-        # For now, assume folder exists or Jenkins API handles nested path creation
         full_job_name = f"{payload.folder_name}/{payload.job_name}"
         logger.info(f"Creating job '{payload.job_name}' in folder '{payload.folder_name}'. Full name: '{full_job_name}'")
     else:
         full_job_name = payload.job_name
         logger.info(f"Creating job '{full_job_name}' at the root level.")
 
-    shell_command = ""
-    description = payload.job_description or f"MCP Created {payload.job_type} job: {full_job_name}" # Update description to use full_job_name
-
-    if payload.job_type == "calendar":
-        shell_command = f"cal {payload.month} {payload.year}"
-        description = payload.job_description or f"Calendar job for {payload.month}/{payload.year} (created via MCP)"
-    elif payload.job_type == "weather":
-        # Sanitize city input slightly for shell command (basic example)
-        safe_city = "".join(c if c.isalnum() or c in ['-', '_', ' '] else '' for c in payload.city).strip()
-        if not safe_city:
-            return make_error_response("Invalid city name provided for weather job.", 400)
-        shell_command = f"curl -s 'wttr.in/{safe_city}?format=3'" # format=3 for concise output
-        description = payload.job_description or f"Weather job for {safe_city} (created via MCP)"
+    shell_command = payload.command
+    description = payload.job_description or f"MCP Created shell job: {full_job_name}"
 
     job_config_xml = JOB_XML_CONFIG_TEMPLATE.format(shell_command=shell_command, description=description)
 
@@ -859,8 +809,6 @@ def create_jenkins_job():
         logger.info(f"Ensuring parent folder '{payload.folder_name}' exists before creating job '{payload.job_name}'.")
         try:
             jenkins_server.create_folder(payload.folder_name)
-            # If create_folder succeeds, it means the folder was created or already existed and the method handled it (though python-jenkins typically errors if it exists)
-            # However, python-jenkins create_folder DOES raise an exception if it already exists.
             logger.info(f"Parent folder '{payload.folder_name}' ensured (likely created by create_folder call if it didn't exist).")
             time.sleep(2) 
         except jenkins.JenkinsException as e_folder:
@@ -868,7 +816,6 @@ def create_jenkins_job():
                 logger.warning(f"Parent folder '{payload.folder_name}' already existed (confirmed by create_folder exception: {e_folder}). Proceeding.")
                 time.sleep(2) # Still give a small delay
             else:
-                # A different JenkinsException occurred, this is a real problem
                 logger.error(f"Jenkins API error while ensuring parent folder '{payload.folder_name}' with create_folder: {e_folder}")
                 return make_error_response(f"Failed to ensure parent folder '{payload.folder_name}': {str(e_folder)}", 500)
         except Exception as e_generic_folder:
@@ -883,9 +830,6 @@ def create_jenkins_job():
         @retry(wait=wait_exponential(multiplier=1, min=2, max=6), stop=stop_after_attempt(3), reraise=True)
         def _create_jenkins_job_api(name, config):
             jenkins_server.create_job(name, config)
-            # Verify creation by trying to get info (optional, but good check)
-            # jenkins_server.get_job_info(name)
-
 
         if _check_job_exists(full_job_name):
             logger.warning(f"Job '{full_job_name}' already exists. Creation aborted.")
@@ -894,7 +838,6 @@ def create_jenkins_job():
         logger.info(f"Creating job '{full_job_name}' with XML config:\n{job_config_xml}")
         _create_jenkins_job_api(full_job_name, job_config_xml)
         
-        # Attempt to get job info to confirm creation and get URL
         job_info_after_creation = jenkins_server.get_job_info(full_job_name)
         job_url = job_info_after_creation.get('url', 'N/A')
 
@@ -903,18 +846,16 @@ def create_jenkins_job():
             "message": "Job created successfully",
             "job_name": full_job_name,
             "job_url": job_url,
-            "job_type": payload.job_type,
             "details": {"shell_command": shell_command, "description": description}
         }), 201 # Created
     
     except jenkins.JenkinsException as e:
         logger.error(f"Jenkins API error during job creation for '{full_job_name}': {e}")
-        # More specific error for common issues
         if "No such folder" in str(e) or "does not exist" in str(e):
              logger.error(f"It seems the base folder 'ProjectCI' might not exist or there are permission issues.")
              return make_error_response(f"Jenkins API error: Could not create job, possibly 'ProjectCI' folder missing or permission issues. Details: {str(e)}", 500)
         return make_error_response(f"Jenkins API error: {str(e)}", 500)
-    except RetryError as e: # Catch RetryError from the helper functions
+    except RetryError as e:
         logger.error(f"Jenkins API error after retries during job creation for '{full_job_name}': {e}")
         return make_error_response(f"Jenkins API error after retries: {str(e)}", 500)
     except Exception as e:
