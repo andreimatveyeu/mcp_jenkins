@@ -9,13 +9,23 @@ PROJECT_ROOT_ON_HOST=$(pwd)
 IMAGE_NAME="jenkins_mcp_server:latest" # Standard image name, ensure 'docker/build' creates this
 CONTAINER_APP_DIR="/app" # Standard working directory in the container, as per typical Dockerfile setup
 # Path to tests inside the container, reflecting the project structure within the src directory
-TEST_TARGET_IN_CONTAINER="${CONTAINER_APP_DIR}/tests"
+TEST_TARGET_BASE_IN_CONTAINER="${CONTAINER_APP_DIR}/tests"
 SERVER_PORT_FOR_TESTS="8001" # Port for the server started by tests, to avoid conflicts with a potentially running main server
+
+# Determine the actual test target based on the first script argument
+if [ -n "$1" ]; then
+  SPECIFIED_TARGET="$1"
+  ACTUAL_TEST_TARGET="${TEST_TARGET_BASE_IN_CONTAINER}/${SPECIFIED_TARGET}"
+  TARGET_INFO_MSG="Specific target from argument: ${SPECIFIED_TARGET} (resolved to ${ACTUAL_TEST_TARGET})"
+else
+  ACTUAL_TEST_TARGET="${TEST_TARGET_BASE_IN_CONTAINER}"
+  TARGET_INFO_MSG="All tests in default location: ${ACTUAL_TEST_TARGET}"
+fi
 
 echo "--- Functional Test Runner ---"
 echo "Host Project Root: ${PROJECT_ROOT_ON_HOST}"
 echo "Docker Image: ${IMAGE_NAME}"
-echo "Test Target in Container: ${TEST_TARGET_IN_CONTAINER}"
+echo "Test Target Logic: ${TARGET_INFO_MSG}"
 echo "Server Port for Tests (inside container): ${SERVER_PORT_FOR_TESTS}"
 echo "-----------------------------"
 
@@ -58,6 +68,7 @@ docker run -t --rm \
     -e "PYTHONUNBUFFERED=1" \
     -e "SERVER_PORT=${SERVER_PORT_FOR_TESTS}" \
     -e "PYTHONPATH=${CONTAINER_APP_DIR}/src:${CONTAINER_APP_DIR}/tests" \
+    -e GOOGLE_AISTUDIO_API_KEY \
     -e JENKINS_URL \
     -e JENKINS_USER \
     -e JENKINS_API_TOKEN \
@@ -68,7 +79,7 @@ docker run -t --rm \
     --network=host \
     --entrypoint pytest \
     "$IMAGE_NAME" \
-    "${TEST_TARGET_IN_CONTAINER}" -v -s
+    "${ACTUAL_TEST_TARGET}" -v -s
 
 EXIT_CODE=$?
 
