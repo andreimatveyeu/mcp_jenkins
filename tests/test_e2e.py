@@ -232,70 +232,76 @@ def test_list_jobs_e2e(server_process, monkeypatch):
 def cleanup_all_jobs_e2e(server_process, monkeypatch):
     """
     Fixture to clean up all Jenkins jobs and folders by calling MCP server endpoints directly.
-    This runs BEFORE the test that uses it.
+    This runs BEFORE and AFTER each test that uses it.
     """
     assert server_process is not None, "Server process fixture failed to run for cleanup."
     
     # Ensure client's MCP_SERVER_URL is patched to the test server
     monkeypatch.setattr("mcp_jenkins.client.MCP_SERVER_URL", FIXTURE_SERVER_URL)
-    
-    print("\nE2E Cleanup: Attempting to clean up all Jenkins jobs and folders...")
 
-    # 1. Get all jobs and folders (recursively)
-    all_items_response = call_mcp_server("/jobs?recursive=true", method="GET")
-    
-    if not isinstance(all_items_response, dict) or "jobs" not in all_items_response:
-        print(f"E2E Cleanup: Could not retrieve items for cleanup. Response: {all_items_response}")
-        # Optionally, could fail here if cleanup is critical: pytest.fail("Failed to list items for cleanup")
-        yield # Proceed with the test, though cleanup might be incomplete
-        return
+    def _perform_cleanup(phase="Pre-test"):
+        print(f"\nE2E Cleanup ({phase}): Attempting to clean up all Jenkins jobs and folders...")
 
-    items_to_delete = all_items_response.get("jobs", [])
-    if not items_to_delete:
-        print("E2E Cleanup: No items found to delete.")
-        yield
-        return
-
-    # Sort items by length of name descending to try to delete nested items first.
-    # Jenkins' folder deletion is often recursive, but this adds a layer of safety.
-    items_to_delete.sort(key=lambda x: len(x.get("name", "")), reverse=True)
-
-    deleted_count = 0
-    failed_to_delete = []
-
-    for item in items_to_delete:
-        item_name = item.get("name")
-        if not item_name:
-            continue
-
-        # The delete endpoint is /job/{full_path}/delete for both jobs and folders
-        delete_url_path = f"/job/{requests.utils.quote(item_name)}/delete" # Ensure item_name is URL-encoded
-        print(f"E2E Cleanup: Attempting to delete '{item_name}' via MCP server at {delete_url_path}")
+        # 1. Get all jobs and folders (recursively)
+        all_items_response = call_mcp_server("/jobs?recursive=true", method="GET")
         
-        delete_response = call_mcp_server(delete_url_path, method="POST") 
+        if not isinstance(all_items_response, dict) or "jobs" not in all_items_response:
+            print(f"E2E Cleanup ({phase}): Could not retrieve items for cleanup. Response: {all_items_response}")
+            # Optionally, could fail here if cleanup is critical: pytest.fail("Failed to list items for cleanup")
+            return False # Indicate cleanup might be incomplete
 
-        if isinstance(delete_response, dict) and delete_response.get("message", "").startswith("Successfully deleted"):
-            print(f"E2E Cleanup: Successfully deleted '{item_name}'.")
-            deleted_count += 1
-        elif isinstance(delete_response, dict) and "error" in delete_response and "404" in delete_response.get("error", ""):
-            print(f"E2E Cleanup: Item '{item_name}' not found (404), assuming already deleted.")
-        elif isinstance(delete_response, str) and "404" in delete_response: # call_mcp_server might return string on HTTPError
-            print(f"E2E Cleanup: Item '{item_name}' not found (404 string response), assuming already deleted.")
-        else:
-            error_msg = f"E2E Cleanup: Failed to delete '{item_name}'. Response: {delete_response}"
-            print(error_msg)
-            failed_to_delete.append(item_name)
+        items_to_delete = all_items_response.get("jobs", [])
+        if not items_to_delete:
+            print(f"E2E Cleanup ({phase}): No items found to delete.")
+            return True # Indicate cleanup was successful (nothing to do)
+
+        # Sort items by length of name descending to try to delete nested items first.
+        # Jenkins' folder deletion is often recursive, but this adds a layer of safety.
+        items_to_delete.sort(key=lambda x: len(x.get("name", "")), reverse=True)
+
+        deleted_count = 0
+        failed_to_delete = []
+
+        for item in items_to_delete:
+            item_name = item.get("name")
+            if not item_name:
+                continue
+
+            # The delete endpoint is /job/{full_path}/delete for both jobs and folders
+            delete_url_path = f"/job/{requests.utils.quote(item_name)}/delete" # Ensure item_name is URL-encoded
+            print(f"E2E Cleanup ({phase}): Attempting to delete '{item_name}' via MCP server at {delete_url_path}")
+            
+            delete_response = call_mcp_server(delete_url_path, method="POST") 
+
+            if isinstance(delete_response, dict) and delete_response.get("message", "").startswith("Successfully deleted"):
+                print(f"E2E Cleanup ({phase}): Successfully deleted '{item_name}'.")
+                deleted_count += 1
+            elif isinstance(delete_response, dict) and "error" in delete_response and "404" in delete_response.get("error", ""):
+                print(f"E2E Cleanup ({phase}): Item '{item_name}' not found (404), assuming already deleted.")
+            elif isinstance(delete_response, str) and "404" in delete_response: # call_mcp_server might return string on HTTPError
+                print(f"E2E Cleanup ({phase}): Item '{item_name}' not found (404 string response), assuming already deleted.")
+            else:
+                error_msg = f"E2E Cleanup ({phase}): Failed to delete '{item_name}'. Response: {delete_response}"
+                print(error_msg)
+                failed_to_delete.append(item_name)
+            
+            time.sleep(0.2) # Small delay
+
+        print(f"E2E Cleanup ({phase}): Finished. Deleted {deleted_count} items. Failed to delete: {failed_to_delete if failed_to_delete else 'None'}.")
         
-        time.sleep(0.2) # Small delay
+        if failed_to_delete:
+            print(f"E2E Cleanup ({phase}) WARNING: Not all items were cleaned up: {failed_to_delete}")
+            return False
+        return True
 
-    print(f"E2E Cleanup: Finished. Deleted {deleted_count} items. Failed to delete: {failed_to_delete if failed_to_delete else 'None'}.")
-    
-    if failed_to_delete:
-        print(f"E2E Cleanup WARNING: Not all items were cleaned up: {failed_to_delete}")
+    # Perform pre-test cleanup
+    _perform_cleanup(phase="Pre-test")
 
     yield # Test runs here
 
-    print("E2E Cleanup: Post-test cleanup phase completed.")
+    # Perform post-test cleanup
+    _perform_cleanup(phase="Post-test")
+    print("E2E Cleanup: Pre-test and Post-test cleanup phases completed.")
 
 
 def test_create_job_e2e(server_process, monkeypatch, cleanup_all_jobs_e2e):
